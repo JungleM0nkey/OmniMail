@@ -1,5 +1,5 @@
 import { DELIVERY_UNCERTAIN_PREFIX, OutboundDeliveryError } from './outbound-errors'
-import type { OutboundProviderConfig } from './outbound-provider-config'
+import type { HttpOutboundProviderConfig } from './outbound-provider-config'
 
 export type DeliveryPayload = {
   from: string
@@ -10,7 +10,7 @@ export type DeliveryPayload = {
   html: string
   idempotencyKey: string
   headers: Record<string, string>
-  attachments: Array<{ filename: string; content: string }>
+  attachments: Array<{ filename: string; content: string; contentType?: string }>
 }
 
 function retryableProviderStatus(status: number): boolean {
@@ -18,7 +18,7 @@ function retryableProviderStatus(status: number): boolean {
 }
 
 export async function deliverWithResend(
-  config: OutboundProviderConfig,
+  config: HttpOutboundProviderConfig,
   payload: DeliveryPayload,
 ): Promise<string> {
   let response: Response
@@ -60,7 +60,7 @@ export async function deliverWithResend(
 }
 
 export async function deliverWithSendflare(
-  config: OutboundProviderConfig,
+  config: HttpOutboundProviderConfig,
   payload: DeliveryPayload,
 ): Promise<string> {
   const batch = payload.to.length > 1

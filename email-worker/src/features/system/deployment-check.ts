@@ -232,8 +232,8 @@ export async function deploymentCheck(env: Env, user: SessionUser): Promise<Resp
     check({
       id: 'outbound-provider', group: 'mail', label: '发信与回复服务',
       ready: hasOutboundProviderConfig(env), required: false, missingState: 'warning',
-      detail: 'Resend 或 SendFlare 发信配置已就绪，具备主动发信与回复的条件。',
-      action: '不需要发信可以跳过；需要时配置 RESEND_DOMAIN_CONFIGS 或 SendFlare。',
+      detail: 'Cloudflare Email、Resend 或 SendFlare 发信配置已就绪，具备主动发信与回复的条件。',
+      action: '不需要发信可以跳过；需要时绑定 EMAIL 或配置 Resend / SendFlare。',
     }),
     check({
       id: 'resend-webhook', group: 'mail', label: 'Resend 投递回执',

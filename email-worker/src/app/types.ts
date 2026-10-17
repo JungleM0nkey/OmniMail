@@ -94,6 +94,7 @@ export interface Env {
   DB: D1Database
   MAIL_BUCKET: R2Bucket
   MAIL_QUEUE: Queue<MailQueueJob>
+  EMAIL?: SendEmail
   NOTIFICATION_QUEUE?: Queue<NotificationQueueJob>
   AI?: Ai
   ASSETS: Fetcher

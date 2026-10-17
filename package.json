@@ -46,7 +46,7 @@
     "@gsap/react": "^2.1.2",
     "franc": "^6.2.0",
     "gsap": "^3.15.0",
-    "hono": "4.13.1",
+    "hono": "4.13.13",
     "lucide-react": "1.27.0",
     "parse5": "^8.0.1",
     "postal-mime": "2.7.5",

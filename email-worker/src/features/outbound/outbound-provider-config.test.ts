@@ -7,6 +7,17 @@ import {
 import type { Env } from '../../app/types'
 
 describe('outbound provider configuration', () => {
+  it('uses the native Cloudflare binding without another provider account', () => {
+    const email = { send: async () => ({ messageId: 'native-1' }) }
+    const env = { EMAIL: email } as Env
+    expect(hasOutboundProviderConfig(env)).toBe(true)
+    expect(outboundProviderForAddress(env, 'owner@example.com')).toEqual({
+      provider: 'cloudflare', email,
+    })
+    env.RESEND_DOMAIN_CONFIGS = JSON.stringify({ 'example.com': { apiKey: 're_existing' } })
+    expect(outboundProviderForAddress(env, 'owner@example.com')?.provider).toBe('resend')
+  })
+
   it('uses a domain-specific SendFlare account before existing Resend configuration', () => {
     const env = {
       RESEND_DOMAIN_CONFIGS: JSON.stringify({

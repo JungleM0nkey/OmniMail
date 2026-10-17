@@ -8,10 +8,15 @@ import {
 } from './sendflare-config'
 import type { Env } from '../../app/types'
 
-export type OutboundProviderConfig = {
+export type HttpOutboundProviderConfig = {
   provider: 'resend' | 'sendflare'
   apiKey: string
   from?: string
+}
+
+export type OutboundProviderConfig = HttpOutboundProviderConfig | {
+  provider: 'cloudflare'
+  email: SendEmail
 }
 
 export function outboundProviderConfigError(env: Env): string | null {
@@ -28,9 +33,11 @@ export function outboundProviderForAddress(env: Env, address: string): OutboundP
   const resend = resendConfigForAddress(env, address)
   if (resend) return { provider: 'resend', ...resend }
   const sendflareGlobal = sendflareGlobalConfig(env)
-  return sendflareGlobal ? { provider: 'sendflare', ...sendflareGlobal } : null
+  if (sendflareGlobal) return { provider: 'sendflare', ...sendflareGlobal }
+  return env.EMAIL ? { provider: 'cloudflare', email: env.EMAIL } : null
 }
 
 export function hasOutboundProviderConfig(env: Env): boolean {
-  return !outboundProviderConfigError(env) && (hasResendConfig(env) || hasSendflareConfig(env))
+  return !outboundProviderConfigError(env)
+    && (hasResendConfig(env) || hasSendflareConfig(env) || Boolean(env.EMAIL))
 }
