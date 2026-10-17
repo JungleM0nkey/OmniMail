@@ -72,9 +72,9 @@ storage: mail received by OmniMail after cutover must remain available and be
 reconciled before any later retirement. Nothing in this change deletes resources.
 
 The console change is a separate PR against the explicitly approved
-`feat/initial-shell` base. Its small launcher change must be integrated with the
-installed floating-dock source before any console activation; deploying an older
-aggregate would overwrite unrelated installed features.
+`feat/initial-shell` base, synchronized with `main` to preserve the current
+floating-dock implementation and its session behavior. Check the shared deployed
+revision again before activation so concurrent releases remain present.
 
 ## Validation
 
