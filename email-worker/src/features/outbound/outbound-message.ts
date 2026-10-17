@@ -8,6 +8,7 @@ import {
   OutboundProviderAcceptedError,
 } from './outbound-errors'
 import { deliverWithResend, deliverWithSendflare } from './outbound-http-provider'
+import { deliverWithCloudflare } from './outbound-cloudflare-provider'
 import { releaseStorage, reserveStorage } from '../messages/message-storage'
 import {
   outboundProviderConfigError,
@@ -451,7 +452,7 @@ export async function deliverOutboundMessage(env: Env, job: OutboundJob): Promis
       content: arrayBufferToBase64(await object.arrayBuffer()),
     }
   }))
-  const from = provider?.from
+  const from = (provider?.provider !== 'cloudflare' && provider?.from)
     || `${(record.sender_name || record.mailbox_address).replace(/[\r\n<>"]/g, '')} <${record.mailbox_address}>`
   const headers: Record<string, string> = {}
   if (record.in_reply_to) headers['In-Reply-To'] = record.in_reply_to
@@ -520,6 +521,8 @@ export async function deliverOutboundMessage(env: Env, job: OutboundJob): Promis
       }
       throw error
     }
+  } else if (provider?.provider === 'cloudflare') {
+    providerId = await deliverWithCloudflare(provider.email, payload, record.sender_name || record.mailbox_address)
   } else if (provider?.provider === 'sendflare') {
     providerId = await deliverWithSendflare(provider, payload)
   } else if (provider) {
@@ -533,7 +536,7 @@ export async function deliverOutboundMessage(env: Env, job: OutboundJob): Promis
       WHERE id = ?`,
     ).bind(providerId, record.id).run()
   } catch (error) {
-    if (isLinuxDoMail || isQqMail || provider?.provider === 'sendflare') {
+    if (isLinuxDoMail || isQqMail || provider?.provider === 'sendflare' || provider?.provider === 'cloudflare') {
       throw new OutboundProviderAcceptedError(providerId, error)
     }
     throw error

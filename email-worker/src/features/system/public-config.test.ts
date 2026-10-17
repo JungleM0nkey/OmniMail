@@ -20,6 +20,14 @@ function environment(settings: Record<string, string>, credentials = false): Env
 }
 
 describe('public registration configuration', () => {
+  it('enables replies with the native Cloudflare email binding', async () => {
+    const env = environment({})
+    env.EMAIL = { send: async () => ({ messageId: 'native-1' }) }
+    const config = await publicConfig(env)
+    expect(config.replyEnabled).toBe(true)
+    expect(config).not.toHaveProperty('EMAIL')
+  })
+
   it('单个全局密钥支持全部邮箱，同时保留显式关闭开关且不泄露主密钥', async () => {
     const env = environment({})
     env.MAIL_CREDENTIALS_KEY = 'global-do-not-return-this-secret-value'

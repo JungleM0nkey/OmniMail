@@ -1,6 +1,15 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "omni-mail",
+  "account_id": "7031244e5dbce80f897a55df4b7c859b",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "mail.apehost.dev", "custom_domain": true }],
+  "vars": {
+    "APP_NAME": "OmniMail",
+    "APP_ORIGINS": "https://mail.apehost.dev",
+    "SUPER_ADMIN_EMAIL": "m0nkey@apehost.dev"
+  },
   "main": "./email-worker/src/index.ts",
   "compatibility_date": "2026-07-27",
   "compatibility_flags": ["nodejs_compat"],
@@ -23,7 +32,8 @@
   ],
   "r2_buckets": [
     {
-      "binding": "MAIL_BUCKET"
+      "binding": "MAIL_BUCKET",
+      "bucket_name": "omni-mail-storage"
     },
     {
       "binding": "BACKUP_BUCKET",
@@ -71,8 +81,9 @@
     ]
   },
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": []
   },
+  "send_email": [{ "name": "EMAIL" }],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

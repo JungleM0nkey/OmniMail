@@ -386,8 +386,10 @@ export const enAdmin: Record<string, string> = {
   '当前已创建 {count} 个邮箱地址。': '{count} mailbox addresses have been created.',
   '添加域名后，为主管理员或其他用户创建收件地址。':
     'After adding a domain, create a receiving address for the owner or another user.',
-  'Resend 或 SendFlare 发信配置已就绪，具备主动发信与回复的条件。':
-    'Resend or SendFlare is configured for sending and replies.',
+  'Cloudflare Email、Resend 或 SendFlare 发信配置已就绪，具备主动发信与回复的条件。':
+    'Cloudflare Email, Resend or SendFlare is configured for sending and replies.',
+  '不需要发信可以跳过；需要时绑定 EMAIL 或配置 Resend / SendFlare。':
+    'Skip this if sending is not needed. Otherwise bind EMAIL or configure Resend / SendFlare.',
   '不需要发信可以跳过；需要时配置 Resend 或 SendFlare API Key。':
     'Skip this if sending is not needed. Otherwise configure a Resend or SendFlare API key.',
   'Cloudflare 不会把 Email Routing 状态暴露给当前 Worker，需要人工确认。':
