@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 import { deliverOutboundMessage } from './outbound-message'
+import { deliverWithCloudflare } from './outbound-cloudflare-provider'
 import type { Env } from '../../app/types'
 
 describe('native Cloudflare outbound delivery', () => {
+  it.each(['E_CONTENT_TOO_LARGE', 'E_RATE_LIMIT_EXCEEDED', 'E_SENDER_NOT_VERIFIED'])(
+    'allows a corrected retry after Cloudflare explicitly rejects %s', async (code) => {
+      const send = vi.fn().mockRejectedValue(Object.assign(new Error('Rejected by Cloudflare'), { code }))
+      await expect(deliverWithCloudflare({ send } as unknown as SendEmail, {
+        replyTo: 'owner@example.com', to: ['friend@example.net'], subject: 'Test',
+        text: 'Body', html: '', headers: {}, attachments: [],
+      }, 'Owner')).rejects.toMatchObject({ retryable: false, deliveryUncertain: false })
+      expect(send).toHaveBeenCalledOnce()
+    },
+  )
+
   it.each(['success', 'uncertain', 'missing-id', 'recording-failure'])('%s', async (outcome) => {
     const statements: Array<{ sql: string; bindings: unknown[] }> = []
     const send = vi.fn(async () => {

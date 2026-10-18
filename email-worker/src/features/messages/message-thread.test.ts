@@ -59,6 +59,7 @@ describe('message thread references', () => {
       message.mailbox_address,
       message.id,
       messageId,
+      `cloudflare:${messageId}`,
       messageId,
       messageId,
     ])
