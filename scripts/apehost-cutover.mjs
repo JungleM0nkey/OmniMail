@@ -32,6 +32,22 @@ const objectManifest = (objects) => sorted(objects.map(({ key, size, sha256: has
 const targetIdentity = (id) => ({ worker: SITE.target, databaseId: id, bucket: SITE.targetBucket })
 const sourceIdentity = () => ({ worker: SITE.source, databaseId: SITE.database, bucket: SITE.bucket })
 const ruleBody = ({ name, enabled, actions, matchers, source }) => ({ name, enabled, actions, matchers, ...(source ? { source } : {}) })
+function emailRuleIdentity(rule) {
+  const ids = [rule?.id, rule?.tag].filter((id) => id !== undefined)
+  requireThat(ids.length > 0 && ids.every((id) => typeof id === 'string' && id.length > 0 && id === ids[0]), 'Invalid or conflicting email rule identity.')
+  return ids[0]
+}
+function normalizeEmailRules(listed, catchAll) {
+  requireThat(emailRuleIdentity(catchAll) === SITE.catchAll, 'Unexpected catch-all identity.')
+  const seen = new Set()
+  return listed.filter((rule) => {
+    const id = emailRuleIdentity(rule)
+    requireThat(!seen.has(id), 'Repeated email rule identity in inventory.'); seen.add(id)
+    if (id !== SITE.catchAll) return true
+    requireThat(same(ruleBody(rule), ruleBody(catchAll)), 'Listed catch-all differs from authoritative catch-all.')
+    return false
+  })
+}
 const workerAction = (rule) => rule?.enabled === true && rule.actions?.length === 1
   && rule.actions[0].type === 'worker' && rule.actions[0].value?.length === 1 ? rule.actions[0].value[0] : undefined
 const protectedDns = (dns) => dns.filter((r) => ['MX', 'TXT'].includes(r.type)).sort((a, b) => a.id.localeCompare(b.id))
@@ -140,10 +156,11 @@ export function oauthApi({ fetcher = fetch, home = homedir(), spawn = spawnSync 
 
 export async function list(api, path, field) {
   const result = [], cursors = new Set()
-  const rulesets = path === `${Z}/rulesets`
-  let cursor, page = 1
+  const rulesets = path === `${Z}/rulesets`, emailRules = path === `${Z}/email/routing/rules`
+  const pageSize = rulesets || emailRules ? 50 : 100
+  let cursor, total, page = 1
   for (let n = 0; n < 1000; n++) {
-    const query = new URLSearchParams({ per_page: rulesets ? '50' : '100', ...(cursor ? { cursor } : rulesets ? {} : { page: String(page) }) })
+    const query = new URLSearchParams({ per_page: String(pageSize), ...(cursor ? { cursor } : rulesets ? {} : { page: String(page) }) })
     const data = await api('GET', `${path}${path.includes('?') ? '&' : '?'}${query}`)
     const items = field ? data.result?.[field] : data.result
     requireThat(Array.isArray(items), 'Invalid list response; refusing incomplete inventory.')
@@ -156,6 +173,19 @@ export async function list(api, path, field) {
       requireThat(!cursors.has(next), 'Repeated inventory cursor.')
       cursors.add(next); cursor = next; continue
     }
+    if (emailRules) {
+      requireThat(items.length <= pageSize && (info === undefined || info !== null && typeof info === 'object' && !Array.isArray(info))
+        && (info?.page === undefined || info.page === page) && (info?.per_page === undefined || info.per_page === pageSize)
+        && (info?.count === undefined || info.count === items.length), 'Invalid email rule inventory pagination metadata.')
+      if (info?.total_count !== undefined || total !== undefined) {
+        requireThat(Number.isSafeInteger(info?.total_count) && info.total_count >= result.length
+          && (total === undefined || total === info.total_count), 'Incomplete or changed email rule inventory total.')
+        total = info.total_count
+        if (result.length === total) return result
+        requireThat(items.length > 0, 'Incomplete email rule inventory page.')
+        page++; continue
+      }
+    }
     if (info?.is_truncated === false) return result
     if (info?.cursor && (info.is_truncated === true || field === 'buckets')) {
       requireThat(!cursors.has(info.cursor), 'Repeated inventory cursor.')
@@ -163,19 +193,20 @@ export async function list(api, path, field) {
     }
     if (info?.is_truncated === true) throw new Error('Truncated inventory has no cursor.')
     if (Number.isInteger(info?.total_pages)) { if (page >= info.total_pages) return result; page++; continue }
-    if (items.length < 100) return result
+    if (items.length < pageSize) return result
     page++
   }
   throw new Error('Inventory pagination limit exceeded.')
 }
 
 export async function inventory(api) {
-  const [workers, databases, buckets, queues, domains, routes, rulesets, dns, emailRules, sending, durableObjects] = await Promise.all([
+  const [workers, databases, buckets, queues, domains, routes, rulesets, dns, listedEmailRules, sending, durableObjects] = await Promise.all([
     list(api, `${A}/workers/scripts`), list(api, `${A}/d1/database`), list(api, `${A}/r2/buckets`, 'buckets'),
     list(api, `${A}/queues`), list(api, `${A}/workers/domains`), list(api, `${Z}/workers/routes`),
     list(api, `${Z}/rulesets`), list(api, `${Z}/dns_records`), list(api, `${Z}/email/routing/rules`), list(api, `${Z}/email/sending/subdomains`), namespaceCatalog(api),
   ])
   const catchAll = (await api('GET', `${Z}/email/routing/rules/catch_all`)).result
+  const emailRules = normalizeEmailRules(listedEmailRules, catchAll)
   const settings = {}, queueDetails = [], ruleDetails = []
   for (const worker of workers) {
     const name = worker.id ?? worker.name
@@ -197,7 +228,7 @@ export function leftovers(view) {
     buckets: view.buckets.filter(has).map((b) => b.name), queues: view.queues.filter(has).map((q) => ({ id: q.queue_id, name: q.queue_name })),
     domains: view.domains.filter(has).map(({ id, hostname, service }) => ({ id, hostname, service })),
     routes: view.routes.filter(has), rules: view.rulesets.flatMap((s) => (s.rules ?? []).filter((r) => r.id === SITE.rule || has(r)).map((r) => ({ ruleset: s.id, rule: r.id }))),
-    emailRules: [...view.emailRules, view.catchAll].filter(has).map((r) => r.id ?? r.tag),
+    emailRules: [...view.emailRules.filter(has), ...(has(view.catchAll.actions) ? [view.catchAll] : [])].map((r) => r.id ?? r.tag),
     workerReferences: Object.entries(view.settings).filter(([, v]) => has(v) || v.bindings.some((b) => b.id === SITE.database)).map(([name]) => name),
     durableObjects: view.durableObjects.namespaces.filter((n) => n.id === REALTIME_REVIEW.id || n.script === SITE.source || has(n)),
   }

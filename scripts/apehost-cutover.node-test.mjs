@@ -552,3 +552,34 @@ test('lost Worker response resumes only after both Worker and namespace absence,
   const index = f.calls.indexOf(deletes[0])
   assert.ok(f.calls[index - 1].path.includes(`/namespaces/${review.id}/objects?`))
 })
+
+test('listed catch-all is validated separately and historical name does not remain an email reference', async (t) => {
+  const f = fixture(t)
+  Object.assign(f.view.catchAll, { tag: SITE.catchAll, name: 'Deliver apehost.dev mail to Mailflare', priority: 2147483647 })
+  Object.defineProperty(f.view, 'emailRules', { get: () => { const listed = copy(f.view.catchAll); delete listed.priority; return [listed] } })
+  await f.run('prepare'); assert.equal(existsSync(f.options.state), false); assert.equal(f.mutations.length, 0)
+  await f.ready()
+  const state = JSON.parse(readFileSync(f.options.state))
+  assert.deepEqual(state.original.emailRules, []); assert.equal(state.original.catchAll.priority, 2147483647)
+  assert.deepEqual((await f.run('audit')).leftovers.emailRules, [SITE.catchAll])
+  await f.run('cutover', true)
+  assert.deepEqual((await f.run('audit')).leftovers.emailRules, [])
+  assert.equal(f.view.catchAll.name, 'Deliver apehost.dev mail to Mailflare')
+  await f.run('rollback', true)
+  assert.deepEqual((await f.run('audit')).leftovers.emailRules, [SITE.catchAll])
+})
+
+test('listed catch-all inconsistencies, unknown identities and ordinary source forwards still refuse', async (t) => {
+  for (const change of [
+    (listed) => { listed.name = 'changed' }, (listed) => { listed.enabled = false },
+    (listed) => { listed.actions = [{ type: 'worker', value: [SITE.target] }] },
+    (listed) => { listed.matchers = [{ type: 'literal', field: 'to', value: 'other@apehost.dev' }] },
+    (listed) => { listed.source = 'other' }, (listed) => { listed.tag = 'conflicting-id' },
+    (listed) => { delete listed.id; delete listed.tag }, (listed) => { listed.id = listed.tag = 'ordinary-source-forward' },
+    (_listed, dedicated) => { dedicated.tag = 'conflicting-id' },
+  ]) {
+    const f = fixture(t), listed = copy(f.view.catchAll); change(listed, f.view.catchAll); f.view.emailRules = [listed]
+    await assert.rejects(f.run('prepare', true), /identity|listed catch-all|route\/domain/i)
+    assert.equal(f.mutations.length, 0); assert.equal(existsSync(f.options.state), false)
+  }
+})
