@@ -290,6 +290,49 @@ test('pagination consumes cursors and refuses loops/truncation', async () => {
   await assert.rejects(list(async () => ({ result: [], result_info: { is_truncated: true, cursor: 'repeat' } }), '/objects'), /Repeated/)
 })
 
+test('ruleset inventory obeys its 50-item limit and follows after cursors', async () => {
+  const calls = []
+  const api = async (method, path) => {
+    const url = new URL(`https://api.cloudflare.com${path}`)
+    if (Number(url.searchParams.get('per_page')) > 50) throw new Error('HTTP 400: per_page cannot be greater than 50')
+    assert.equal(method, 'GET'); assert.equal(url.pathname, `${Z}/rulesets`)
+    assert.equal(url.searchParams.get('per_page'), '50'); assert.equal(url.searchParams.has('page'), false)
+    calls.push(url.searchParams.get('cursor'))
+    return url.searchParams.get('cursor') === 'next+/='
+      ? { result: [{ id: 'last-rule' }], result_info: { cursors: { after: '' } } }
+      : { result: Array.from({ length: 50 }, (_, i) => ({ id: `rule-${i}` })), result_info: { cursors: { after: 'next+/=' } } }
+  }
+  const result = await list(api, `${Z}/rulesets`)
+  assert.equal(result.length, 51); assert.equal(result.at(-1).id, 'last-rule')
+  assert.deepEqual(calls, [null, 'next+/='])
+})
+
+test('ruleset pagination honors short pages and refuses repeated after cursors', async () => {
+  const api = async (_method, path) => new URL(`https://api.cloudflare.com${path}`).searchParams.has('cursor')
+    ? { result: [{ id: 'second' }], result_info: { cursors: {} } }
+    : { result: [{ id: 'first' }], result_info: { cursors: { after: 'next' } } }
+  assert.deepEqual(await list(api, `${Z}/rulesets`), [{ id: 'first' }, { id: 'second' }])
+  await assert.rejects(list(async () => ({ result: [], result_info: { cursors: { after: 'repeat' } } }), `${Z}/rulesets`), /Repeated/)
+})
+
+test('queue pages and R2 bucket cursors retain their existing 100-item requests', async () => {
+  const pages = []
+  const queues = await list(async (_method, path) => {
+    const query = new URL(`https://api.cloudflare.com${path}`).searchParams
+    assert.equal(query.get('per_page'), '100'); assert.equal(query.has('cursor'), false)
+    const page = Number(query.get('page')); pages.push(page)
+    return { result: [{ queue_id: `queue-${page}` }], result_info: { total_pages: 2 } }
+  }, `${A}/queues`)
+  assert.deepEqual(queues.map((q) => q.queue_id), ['queue-1', 'queue-2']); assert.deepEqual(pages, [1, 2])
+  const buckets = await list(async (_method, path) => {
+    const query = new URL(`https://api.cloudflare.com${path}`).searchParams
+    assert.equal(query.get('per_page'), '100')
+    return query.has('cursor') ? { result: { buckets: [{ name: 'last' }] }, result_info: {} }
+      : { result: { buckets: [{ name: 'first' }] }, result_info: { cursor: 'bucket-next' } }
+  }, `${A}/r2/buckets`, 'buckets')
+  assert.deepEqual(buckets.map((b) => b.name), ['first', 'last'])
+})
+
 test('step records intent before a mutation and skips an already completed operation', async () => {
   const state = { started: {}, completed: {} }, saved = [], plans = []; let present = false, writes = 0
   const options = { execute: true, saveState: () => saved.push(copy(state)), plans, apply: async () => { assert.equal(saved.at(-1).started.one, true); writes++; present = true }, done: async () => present }
