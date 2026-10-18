@@ -129,6 +129,13 @@ catch-all, a separately staged OmniMail database/storage/backups, and known queu
 ownership. Later commands reject changed Worker identity/content, recreated
 source queues/buckets, unexpected references or routing changes.
 
+Email Routing rule inventory uses its 50-item page limit and consumes every
+reported page. If that list includes the known catch-all, its identity and full
+rule body must agree with the dedicated catch-all endpoint before it is separated
+from ordinary rules. A conflicting entry or an extra rule forwarding to Mailflare
+stops preparation. The saved catch-all name is preserved through cutover and
+rollback; audit checks its actions for references rather than its historical name.
+
 The only permitted source Durable Object is `mailflare_RealtimeHub`, namespace
 `702f544aa78e480db6bb37f2aac86380`, class `RealtimeHub`, binding `REALTIME`.
 The shipped Worker ETag must be exactly
@@ -279,12 +286,15 @@ revision again before activation so concurrent releases remain present.
 
 Cutover-tool checks are separate from application acceptance:
 
-- `rtk node --test scripts/apehost-cutover.node-test.mjs` covers dry runs, destructive
+- `rtk node --test scripts/apehost-cutover.node-test.mjs scripts/apehost-email-rules.node-test.mjs`
+  covers dry runs, destructive
   refusal, receipt mismatches, source freshness, local/remote backup corruption,
   queue ownership/backlog, exact deletion scope, rollback and interrupted resume.
   It also covers complete Durable Object pagination, exact source-review
   boundaries, immutable Worker archives, fresh storage refusal, Worker/namespace
   absence after interrupted deletion, and sanitized malformed private JSON.
+  Routing regressions cover the duplicate catch-all contract, identity/body
+  mismatches, ordinary forwarding rules and 50-item page/count completion.
 - `rtk node scripts/check-file-lines.mjs` checks repository file size limits.
 - No mocked test establishes live delivery or Browser Harness acceptance.
 
