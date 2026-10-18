@@ -28,6 +28,9 @@ It checks all imported IDs, both directions, mailbox ownership, visible folders,
 read/starred flags, original and MIME timestamps, headers, native thread groups,
 body text/HTML, raw MIME, attachment bytes/metadata, quota accounting, body
 search, anonymous denial, foreign-origin CSRF denial, and exact framing headers.
+Folder checks require exact imported IDs and summaries while allowing unrelated
+native mail to arrive or advance delivery state. A changed global count triggers
+a fresh D1 count check only if every imported row still has the same fingerprint.
 
 The only application mutations are owner login and cleanup of that session.
 The CSRF probe attempts to log out its own session with a rejected origin; it

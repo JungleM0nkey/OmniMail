@@ -11,8 +11,9 @@ import {
 } from './verify-mailflare-snapshot.mjs'
 
 const TIMEOUT = 30_000
+const MESSAGE_ROWS_SQL = 'SELECT m.*, mb.is_hidden AS _mailbox_hidden FROM messages m JOIN mailboxes mb ON mb.address = m.mailbox_address WHERE mb.user_id = ?'
 const readJson = (filename) => JSON.parse(readFileSync(filename, 'utf8').replace(/^\uFEFF/, ''))
-const safeError = (error) => /^[a-z0-9_.-]+(?: HTTP \d{3})?$/.test(error?.message || '')
+const safeError = (error) => /^[a-z][A-Za-z0-9_.-]*(?: HTTP \d{3})?$/.test(error?.message || '')
   ? error.message : 'check.failed-with-private-details-suppressed'
 
 export function cloudflareReader(account, database, bucket, token, request = fetch) {
@@ -66,6 +67,62 @@ export function apiReader(base, request = fetch) {
     }
     return response
   }
+}
+
+export async function verifyMessageFolders({ messages, draftCount, userId, cf, api }) {
+  const importedRows = (rows) => rows.filter((row) => row.id.startsWith('mfl_'))
+  const nativeRows = (rows) => importedRows(rows).map(({ _mailbox_hidden: _hidden, ...row }) => row)
+  const importedFingerprint = stateFingerprint('messages', nativeRows(messages), 'id')
+  const stored = new Map(importedRows(messages).map((row) => [row.id, row]))
+  const visible = (rows) => rows.filter((row) => !row._mailbox_hidden || row.mailbox_address === '__unassigned__@omnimail.invalid')
+  const countsFor = (rows, drafts) => {
+    const items = visible(rows)
+    return {
+      unread: items.filter((row) => row.direction === 'incoming' && row.folder === 'inbox' && row.is_read === 0).length,
+      starred: items.filter((row) => row.is_starred === 1 && row.folder !== 'trash').length,
+      sent: items.filter((row) => row.direction === 'outgoing' && row.folder === 'sent').length,
+      trash: items.filter((row) => row.folder === 'trash').length, drafts,
+    }
+  }
+  let counts = countsFor(messages, draftCount)
+  const list = async (folder, query) => {
+    const items = [], cursors = new Set()
+    let cursor
+    do {
+      const params = new URLSearchParams({ folder, limit: '100', ...(query ? { q: query } : {}), ...(cursor ? { cursor } : {}) })
+      const response = await api(`/api/messages?${params}`)
+      equal(response.status, 200, 'api.message-list.unavailable')
+      const page = await response.json()
+      ensure(Array.isArray(page.messages) && typeof page.page?.hasMore === 'boolean', 'api.message-list.invalid')
+      if (stableJson(page.counts) !== stableJson(counts)) {
+        const refreshed = await cf.query(MESSAGE_ROWS_SQL, [userId])
+        equal(stateFingerprint('messages', nativeRows(refreshed), 'id'), importedFingerprint,
+          'target.imported-messages.changed-during-verification')
+        const drafts = (await cf.query('SELECT COUNT(*) AS count FROM mail_drafts WHERE user_id = ?', [userId]))[0].count
+        counts = countsFor(refreshed, drafts)
+      }
+      equal(page.counts, counts, 'api.message-counts.mismatch')
+      items.push(...page.messages)
+      ensure(items.every((item) => typeof item.id === 'string' && item.id), 'api.message-list.invalid-id')
+      equal(new Set(items.map((item) => item.id)).size, items.length, 'api.message-list.duplicate')
+      cursor = page.page.hasMore ? page.page.nextCursor : null
+      ensure(!page.page.hasMore || typeof cursor === 'string' && cursor && !cursors.has(cursor), 'api.message-list.cursor.invalid')
+      if (cursor) cursors.add(cursor)
+    } while (cursor)
+    return items
+  }
+  for (const folder of ['inbox', 'sent', 'trash', 'starred']) {
+    const listed = importedRows(await list(folder))
+    const expected = visible(importedRows(messages)).filter((row) => folder === 'starred' ? row.is_starred === 1 && row.folder !== 'trash'
+      : folder === 'trash' ? row.folder === 'trash' : row.folder === folder && row.direction === (folder === 'inbox' ? 'incoming' : 'outgoing'))
+    equal(listed.map((row) => row.id).sort(), expected.map((row) => row.id).sort(), 'api.folder-message-ids.mismatch')
+    for (const entry of listed) {
+      const summary = expectedSummary(stored.get(entry.id))
+      equal(Object.keys(entry).sort(), Object.keys(summary).sort(), 'api.imported-folder-message.shape.mismatch')
+      for (const [key, value] of Object.entries(summary)) equal(entry[key], value, `api.imported-folder-message.${key}.mismatch`)
+    }
+  }
+  return list
 }
 
 export async function verifyImport(options, clients) {
@@ -182,7 +239,7 @@ export async function verifyImport(options, clients) {
       equal(users[0].status, 'active', 'target.owner.inactive')
       equal(users[0].deleted_at, null, 'target.owner.deleted')
       mailboxes = await cf.query('SELECT mb.*, d.is_active AS domain_active FROM mailboxes mb LEFT JOIN domains d ON d.name = lower(substr(mb.address, instr(mb.address, \'@\') + 1)) WHERE mb.user_id = ?', [actor.id])
-      messages = await cf.query('SELECT m.*, mb.is_hidden AS _mailbox_hidden FROM messages m JOIN mailboxes mb ON mb.address = m.mailbox_address WHERE mb.user_id = ?', [actor.id])
+      messages = await cf.query(MESSAGE_ROWS_SQL, [actor.id])
       attachments = await cf.query('SELECT a.* FROM attachments a JOIN messages m ON m.id = a.message_id JOIN mailboxes mb ON mb.address = m.mailbox_address WHERE mb.user_id = ?', [actor.id])
       search = await cf.query('SELECT ms.* FROM message_search ms JOIN messages m ON m.id = ms.message_id JOIN mailboxes mb ON mb.address = m.mailbox_address WHERE mb.user_id = ?', [actor.id])
       draftCount = (await cf.query('SELECT COUNT(*) AS count FROM mail_drafts WHERE user_id = ?', [actor.id]))[0].count
@@ -293,42 +350,12 @@ export async function verifyImport(options, clients) {
       equal(users[0].storage_used_bytes, messages.reduce((sum, row) => sum + row.quota_bytes, 0) + draftBytes[0].bytes, 'target.owner.storage-used.mismatch')
       ensure(users[0].storage_quota_bytes === 0 || users[0].storage_quota_bytes >= users[0].storage_used_bytes, 'target.owner.storage-quota.exceeded')
     })
-    const visibleMessages = messages.filter((row) => !row._mailbox_hidden || row.mailbox_address === '__unassigned__@omnimail.invalid')
-    const counts = {
-      unread: visibleMessages.filter((row) => row.direction === 'incoming' && row.folder === 'inbox' && row.is_read === 0).length,
-      starred: visibleMessages.filter((row) => row.is_starred === 1 && row.folder !== 'trash').length,
-      sent: visibleMessages.filter((row) => row.direction === 'outgoing' && row.folder === 'sent').length,
-      trash: visibleMessages.filter((row) => row.folder === 'trash').length, drafts: draftCount,
-    }
-    const list = async (folder, query) => {
-      const items = [], cursors = new Set()
-      let cursor
-      do {
-        const params = new URLSearchParams({ folder, limit: '100', ...(query ? { q: query } : {}), ...(cursor ? { cursor } : {}) })
-        const response = await api(`/api/messages?${params}`)
-        equal(response.status, 200, 'api.message-list.unavailable')
-        const page = await response.json()
-        ensure(Array.isArray(page.messages) && typeof page.page?.hasMore === 'boolean', 'api.message-list.invalid')
-        equal(page.counts, counts, 'api.message-counts.mismatch')
-        items.push(...page.messages)
-        cursor = page.page.hasMore ? page.page.nextCursor : null
-        ensure(!page.page.hasMore || typeof cursor === 'string' && cursor && !cursors.has(cursor), 'api.message-list.cursor.invalid')
-        if (cursor) cursors.add(cursor)
-        ensure(items.length <= messages.length, 'api.message-list.duplicate-or-inconsistent')
-      } while (cursor)
-      return items
-    }
+    let list
     await check('folders-and-pagination', async () => {
-      for (const folder of ['inbox', 'sent', 'trash', 'starred']) {
-        const listed = await list(folder)
-        const visible = visibleMessages
-          .filter((row) => folder === 'starred' ? row.is_starred === 1 && row.folder !== 'trash'
-            : folder === 'trash' ? row.folder === 'trash' : row.folder === folder && row.direction === (folder === 'inbox' ? 'incoming' : 'outgoing'))
-        equal(listed.map((row) => row.id).sort(), visible.map((row) => row.id).sort(), 'api.folder-message-ids.mismatch')
-        for (const entry of listed) equal(entry, expectedSummary(storedMessages.get(entry.id)), 'api.folder-message-metadata.mismatch')
-      }
+      list = await verifyMessageFolders({ messages, draftCount, userId: actor.id, cf, api })
     })
     await check('body-search', async () => {
+      ensure(list, 'api.body-search.folder-verification-failed')
       for (const item of expected) {
         const token = item.body.text.match(/[\p{L}\p{N}]{4,40}/u)?.[0]?.toLowerCase()
         if (!token) continue

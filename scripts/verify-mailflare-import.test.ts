@@ -100,7 +100,12 @@ async function targetFixture() {
         .filter((row) => !q || search.find((entry) => entry.message_id === row.id)?.content.includes(q))
       const offset = Number(url.searchParams.get('cursor') || 0)
       const page = matching.slice(offset, offset + 1)
-      return Response.json({ messages: page.map(expectedSummary), counts: { unread: 1, starred: 1, sent: 1, trash: 0, drafts: 0 },
+      return Response.json({ messages: page.map(expectedSummary), counts: {
+        unread: messages.filter((row) => row.direction === 'incoming' && row.folder === 'inbox' && !row.is_read).length,
+        starred: messages.filter((row) => row.is_starred && row.folder !== 'trash').length,
+        sent: messages.filter((row) => row.direction === 'outgoing' && row.folder === 'sent').length,
+        trash: messages.filter((row) => row.folder === 'trash').length, drafts: 0,
+      },
         page: { hasMore: offset + 1 < matching.length, nextCursor: offset + 1 < matching.length ? String(offset + 1) : null } })
     }
     const parts = url.pathname.split('/')
@@ -204,6 +209,92 @@ describe('independent Mailflare verification', () => {
     expect(after.parity.counts.targetMessages).toBe(3)
     expect(after.targetState).toEqual(before.targetState)
     expect(fixture.requests.some(({ path }) => path.includes('cursor=1'))).toBe(true)
+  })
+
+  it('allows native delivery state to advance after the initial SQL snapshot', async () => {
+    const fixture = await targetFixture()
+    const native = { ...fixture.messages[0], id: 'native-self-test', message_id: null,
+      status: 'processing', delivery_status: 'queued', raw_key: null, body_key: null,
+      attachment_count: 0, size: 0, quota_bytes: 0, stored_bytes: 0 }
+    fixture.messages.push(native)
+    const readObject = fixture.cf.object
+    fixture.cf.object = async (key) => {
+      native.status = 'sent'
+      native.delivery_status = 'sent'
+      native.sent_at! += 10
+      return readObject(key)
+    }
+    const receipt = await verifyImport(fixture.options, fixture)
+    expect(receipt.parity.checks.find((item) => item.id === 'folders-and-pagination')).toMatchObject({ status: 'PASSED' })
+    expect(receipt.status).toBe('PASSED')
+  })
+
+  it('accepts newly arrived native mail after SQL read and refreshes its counts', async () => {
+    const fixture = await targetFixture()
+    const readObject = fixture.cf.object
+    let arrived = false
+    fixture.cf.object = async (key) => {
+      if (!arrived) {
+        arrived = true
+        fixture.messages.push({ ...fixture.messages[1], id: 'native-arrival', message_id: '<new@example.com>',
+          is_starred: 0, raw_key: null, body_key: null, attachment_count: 0, size: 0, quota_bytes: 0, stored_bytes: 0 })
+      }
+      return readObject(key)
+    }
+    const receipt = await verifyImport(fixture.options, fixture)
+    expect(receipt.status).toBe('PASSED')
+  })
+
+  it('refuses imported state drift while refreshing counts for native mail', async () => {
+    const fixture = await targetFixture()
+    const readObject = fixture.cf.object
+    fixture.cf.object = async (key) => {
+      fixture.messages[1].is_read = 1
+      return readObject(key)
+    }
+    const receipt = await verifyImport(fixture.options, fixture)
+    expect(receipt.parity.checks.find((item) => item.id === 'folders-and-pagination')).toMatchObject({
+      status: 'FAILED', reason: 'target.imported-messages.changed-during-verification',
+    })
+  })
+
+  it('still checks every imported folder summary field with native mail present', async () => {
+    const fixture = await targetFixture()
+    fixture.messages.push({ ...fixture.messages[0], id: 'native-mail', attachment_count: 0, quota_bytes: 0 })
+    const api = fixture.api
+    fixture.api = async (path, options) => {
+      const response = await api(path, options)
+      if (path.startsWith('/api/messages?') && !options?.anonymous) {
+        const page = await response.json()
+        for (const row of page.messages) if (row.id.startsWith('mfl_')) row.isRead = !row.isRead
+        return Response.json(page)
+      }
+      return response
+    }
+    const receipt = await verifyImport(fixture.options, fixture)
+    expect(receipt.parity.checks.find((item) => item.id === 'folders-and-pagination')).toMatchObject({
+      status: 'FAILED', reason: 'api.imported-folder-message.isRead.mismatch',
+    })
+  })
+
+  it.each(['duplicate', 'repeated-cursor'])('refuses %s pagination with native mail present', async (kind) => {
+    const fixture = await targetFixture()
+    fixture.messages.push({ ...fixture.messages[0], id: 'native-pagination', attachment_count: 0, quota_bytes: 0 })
+    const api = fixture.api
+    fixture.api = async (path, options) => {
+      const response = await api(path, options)
+      if (path.startsWith('/api/messages?folder=sent&') && !options?.anonymous) {
+        const page = await response.json()
+        if (kind === 'duplicate') page.messages.push({ ...page.messages[0] })
+        else page.page = { hasMore: true, nextCursor: '1' }
+        return Response.json(page)
+      }
+      return response
+    }
+    const receipt = await verifyImport(fixture.options, fixture)
+    expect(receipt.parity.checks.find((item) => item.id === 'folders-and-pagination')).toMatchObject({
+      status: 'FAILED', reason: kind === 'duplicate' ? 'api.message-list.duplicate' : 'api.message-list.cursor.invalid',
+    })
   })
 
   it.each(['body', 'attachment-bytes', 'archived-metadata', 'missing-message', 'api-body', 'api-counts'])(
