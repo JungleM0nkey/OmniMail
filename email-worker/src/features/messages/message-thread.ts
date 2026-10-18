@@ -16,6 +16,7 @@ export async function listMessageThread(
 ) {
   const references = messageReferenceIds(
     selected.message_id,
+    selected.provider_id?.match(/^cloudflare:(<[^<>\s]+>)$/)?.[1],
     selected.in_reply_to,
     selected.references_header,
   )
@@ -24,13 +25,14 @@ export async function listMessageThread(
   for (const reference of references) {
     conditions.push(
       'm.message_id = ?',
+      'm.provider_id = ?',
       'm.in_reply_to = ?',
       `instr(
         ' ' || COALESCE(m.references_header, '') || ' ',
         ' ' || ? || ' '
       ) > 0`,
     )
-    bindings.push(reference, reference, reference)
+    bindings.push(reference, `cloudflare:${reference}`, reference, reference)
   }
   const { results } = await env.DB.prepare(
     `SELECT m.*
