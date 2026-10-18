@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { REALTIME_REVIEW, namespaceCatalog, checkSourceStorage, emptyNamespace, prepareSourceArchive, sourceArchiveBytes } from './apehost-source-storage.mjs'
 
 export const SITE = Object.freeze({
   account: '7031244e5dbce80f897a55df4b7c859b', zone: 'e2c7c4a817c98ffccf4b3e964bd9aa13',
@@ -48,7 +49,9 @@ function save(path, data) {
   writeFileSync(`${path}.tmp`, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
   renameSync(`${path}.tmp`, path)
 }
-const parseJson = (bytes) => JSON.parse(String(bytes).replace(/^\uFEFF/, ''))
+function parseJson(bytes) {
+  try { return JSON.parse(String(bytes).replace(/^\uFEFF/, '')) } catch { throw new Error('Private JSON input is invalid.') }
+}
 const readJson = (path) => parseJson(readFileSync(path, 'utf8'))
 function immutableFile(path, bytes) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -115,7 +118,7 @@ export function oauthApi({ fetcher = fetch, home = homedir(), spawn = spawnSync 
   requireThat(!auth.error && auth.status === 0, 'Cloudflare OAuth helper failed; refresh OAuth before retrying.')
   const credential = readJson(join(home, '.cloudflare-oauth', 'tokens.json'))
   requireThat(typeof credential.access_token === 'string' && credential.access_token.length > 0, 'Cloudflare OAuth session is missing.')
-  return async (method, path, { body, binary = false, allow404 = false } = {}) => {
+  return async (method, path, { body, binary = false, responseMetadata = false, allow404 = false } = {}) => {
     requireThat(path.startsWith(`${A}/`) || path.startsWith(`${Z}/`), 'Unexpected Cloudflare scope.')
     const headers = { Authorization: `Bearer ${credential.access_token}` }
     if (body !== undefined) headers['Content-Type'] = Buffer.isBuffer(body) ? 'application/octet-stream' : 'application/json'
@@ -123,7 +126,10 @@ export function oauthApi({ fetcher = fetch, home = homedir(), spawn = spawnSync 
       method, headers, body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(60_000),
     })
     if (allow404 && response.status === 404) return null
-    if (binary && response.ok) return Buffer.from(await response.arrayBuffer())
+    if (binary && response.ok) {
+      const bytes = Buffer.from(await response.arrayBuffer())
+      return responseMetadata ? { bytes, contentType: response.headers.get('content-type'), etag: response.headers.get('etag') } : bytes
+    }
     let data
     try { data = await response.json() } catch { throw new Error(`Cloudflare ${method} failed: HTTP ${response.status}; invalid response.`) }
     const endpoint = path.split('?')[0].replace(/(\/objects\/).+/, '$1[object]')
@@ -156,10 +162,10 @@ export async function list(api, path, field) {
 }
 
 export async function inventory(api) {
-  const [workers, databases, buckets, queues, domains, routes, rulesets, dns, emailRules, sending] = await Promise.all([
+  const [workers, databases, buckets, queues, domains, routes, rulesets, dns, emailRules, sending, durableObjects] = await Promise.all([
     list(api, `${A}/workers/scripts`), list(api, `${A}/d1/database`), list(api, `${A}/r2/buckets`, 'buckets'),
     list(api, `${A}/queues`), list(api, `${A}/workers/domains`), list(api, `${Z}/workers/routes`),
-    list(api, `${Z}/rulesets`), list(api, `${Z}/dns_records`), list(api, `${Z}/email/routing/rules`), list(api, `${Z}/email/sending/subdomains`),
+    list(api, `${Z}/rulesets`), list(api, `${Z}/dns_records`), list(api, `${Z}/email/routing/rules`), list(api, `${Z}/email/sending/subdomains`), namespaceCatalog(api),
   ])
   const catchAll = (await api('GET', `${Z}/email/routing/rules/catch_all`)).result
   const settings = {}, queueDetails = [], ruleDetails = []
@@ -171,7 +177,7 @@ export async function inventory(api) {
   }
   for (const queue of queues) queueDetails.push((await api('GET', `${A}/queues/${queue.queue_id}`)).result)
   for (const rule of rulesets) ruleDetails.push((await api('GET', `${Z}/rulesets/${rule.id}`)).result)
-  return { workers, databases, buckets, queues: queueDetails, domains, routes, rulesets: ruleDetails, dns, emailRules, catchAll, sending, settings }
+  return { workers, databases, buckets, queues: queueDetails, domains, routes, rulesets: ruleDetails, dns, emailRules, catchAll, sending, settings, durableObjects }
 }
 
 export function leftovers(view) {
@@ -185,6 +191,7 @@ export function leftovers(view) {
     routes: view.routes.filter(has), rules: view.rulesets.flatMap((s) => (s.rules ?? []).filter((r) => r.id === SITE.rule || has(r)).map((r) => ({ ruleset: s.id, rule: r.id }))),
     emailRules: [...view.emailRules, view.catchAll].filter(has).map((r) => r.id ?? r.tag),
     workerReferences: Object.entries(view.settings).filter(([, v]) => has(v) || v.bindings.some((b) => b.id === SITE.database)).map(([name]) => name),
+    durableObjects: view.durableObjects.namespaces.filter((n) => n.id === REALTIME_REVIEW.id || n.script === SITE.source || has(n)),
   }
 }
 
@@ -201,11 +208,8 @@ function ownership(view, state, allowMissing = false) {
     && source.some((b) => b.type === 'r2_bucket' && b.bucket_name === SITE.bucket)
     && source.every((b) => b.type !== 'd1' || b.id === SITE.database)
     && source.every((b) => b.type !== 'r2_bucket' || b.bucket_name === SITE.bucket)
-    && source.every((b) => b.type !== 'queue' || SITE.queues.includes(b.queue_name ?? b.queue))
-    && !source.some((b) => b.type === 'durable_object_namespace'), 'Unexpected Mailflare ownership or Durable Objects; stop for review.')
-  const sourceWorker = view.workers.find((w) => (w.id ?? w.name) === SITE.source)
-  requireThat(!Object.values(sourceWorker?.exports ?? {}).some((e) => e.type === 'durable-object')
-    && !sourceWorker?.named_handlers?.some((h) => h.handlers?.includes('class')), 'Mailflare exports Durable Objects; retirement needs a separate storage review.')
+    && source.every((b) => b.type !== 'queue' || SITE.queues.includes(b.queue_name ?? b.queue)), 'Unexpected Mailflare ownership; stop for review.')
+  checkSourceStorage(view, state)
   for (const [name, config] of Object.entries(view.settings)) if (name !== SITE.source) {
     requireThat(!config.bindings.some((b) => b.id === SITE.database || b.bucket_name === SITE.bucket
       || b.service === SITE.source || SITE.queues.includes(b.queue_name ?? b.queue)), `Unexpected Mailflare reference in Worker ${name}.`)
@@ -363,6 +367,7 @@ export async function runCutover(command, options, { api, now = () => new Date()
         state.original = view
       }
       ownership(view, state, state.phase === 'decommissioning')
+      await prepareSourceArchive(api, view, state, statePath, execute, now, saveState)
       if (execute) saveState()
       return { command, execute, target: state.target, plans: ['save-original-control-plane'], phase: state.phase }
     }
@@ -373,6 +378,7 @@ export async function runCutover(command, options, { api, now = () => new Date()
     const parity = parseJson(parityBytes), runtime = options['runtime-receipt'] ? readJson(options['runtime-receipt']) : undefined
     validateReceipts(snapshot, parity, runtime, state.target.databaseId, command, Date.parse(now()), state.cutoverAt)
     ownership(view, state, command === 'decommission' && ['decommissioning', 'decommissioned'].includes(state.phase))
+    const sourceArchive = sourceArchiveBytes(state, statePath)
     const doStep = (id, apply, done) => step(state, id, { execute, saveState, apply: async () => {
       if (!id.startsWith('delete-object:')) ownership(await refresh(), state, command === 'decommission')
       await apply()
@@ -385,6 +391,7 @@ export async function runCutover(command, options, { api, now = () => new Date()
       try { db = await freshSource(api, snapshot, state) } finally { state.backup = previous }
       await targetUnchanged(api, parity, state)
       const artifacts = { 'snapshot.json': snapshot.bytes, 'source-d1.json': Buffer.from(canonical(db)), 'control-plane.json': Buffer.from(canonical(state.original)), 'parity.json': parityBytes }
+      if (sourceArchive) { await emptyNamespace(api); artifacts['source-worker.json'] = sourceArchive }
       const parityHash = sha256(parityBytes)
       const prefix = `mailflare-retirement/${snapshot.hash}/${parityHash}`, directory = join(dirname(statePath), `mailflare-backup-${snapshot.hash}`, parityHash)
       for (const [name, bytes] of Object.entries(artifacts)) {
@@ -409,10 +416,11 @@ export async function runCutover(command, options, { api, now = () => new Date()
     requireThat(state.backup?.snapshotSha256 === snapshot.hash && state.backup.paritySha256 === sha256(parityBytes)
       && state.backup.prefix === `mailflare-retirement/${snapshot.hash}/${sha256(parityBytes)}`
       && state.backup.directory === join(dirname(statePath), `mailflare-backup-${snapshot.hash}`, sha256(parityBytes))
-      && same(Object.keys(state.backup.artifacts ?? {}).sort(), ['control-plane.json', 'parity.json', 'snapshot.json', 'source-d1.json'])
+      && same(Object.keys(state.backup.artifacts ?? {}).sort(), ['control-plane.json', 'parity.json', 'snapshot.json', 'source-d1.json', ...(sourceArchive ? ['source-worker.json'] : [])].sort())
       && state.backup.artifacts['snapshot.json'] === snapshot.hash && state.backup.artifacts['parity.json'] === sha256(parityBytes)
       && state.backup.artifacts['source-d1.json'] === state.backup.databaseSha256
-      && state.backup.artifacts['control-plane.json'] === sha256(Buffer.from(canonical(state.original))), 'Latest verified snapshot/receipt must be backed up first.')
+      && state.backup.artifacts['control-plane.json'] === sha256(Buffer.from(canonical(state.original)))
+      && (!sourceArchive || state.backup.artifacts['source-worker.json'] === sha256(sourceArchive)), 'Latest verified snapshot/receipt must be backed up first.')
     for (const [name, hash] of Object.entries(state.backup.artifacts)) {
       requireThat(HASH.test(hash) && sha256(readFileSync(join(state.backup.directory, name))) === hash
         && sha256(await api('GET', objectPath(SITE.backupBucket, `${state.backup.prefix}/${name}`), { binary: true })) === hash, 'Local/independent remote backup verification failed.')
@@ -450,7 +458,13 @@ export async function runCutover(command, options, { api, now = () => new Date()
       if (!queue) { requireThat(state.started[`delete-queue:${saved.queue_id}`], 'Source queue disappeared unexpectedly.'); continue }
       for (const consumer of queue.consumers) await doStep(`delete-consumer:${consumer.consumer_id}`, async () => { await emptyQueue(queue); await api('DELETE', `${A}/queues/${queue.queue_id}/consumers/${consumer.consumer_id}`) }, async () => !(await refresh()).queues.find((q) => q.queue_id === queue.queue_id)?.consumers.some((c) => c.consumer_id === consumer.consumer_id))
     }
-    await doStep('delete-worker', async () => { ownership(await refresh(), state); for (const q of view.queues.filter((q) => SITE.queues.includes(q.queue_name))) await emptyQueue(q); await freshSource(api, snapshot, state); await api('DELETE', `${A}/workers/scripts/${SITE.source}?force=false`) }, async () => !(await refresh()).settings[SITE.source] && Boolean(state.started['delete-worker']))
+    await doStep('delete-worker', async () => {
+      for (const q of view.queues.filter((q) => SITE.queues.includes(q.queue_name))) await emptyQueue(q)
+      await freshSource(api, snapshot, state)
+      ownership(await refresh(), state)
+      if (sourceArchive) await emptyNamespace(api)
+      await api('DELETE', `${A}/workers/scripts/${SITE.source}?force=false`)
+    }, async () => { await refresh(); checkSourceStorage(view, state); return !view.settings[SITE.source] && Boolean(state.started['delete-worker']) })
     for (const queue of state.original.queues.filter((q) => SITE.queues.includes(q.queue_name))) {
       await doStep(`delete-queue:${queue.queue_id}`, async () => {
         const current = (await api('GET', `${A}/queues/${queue.queue_id}`)).result
