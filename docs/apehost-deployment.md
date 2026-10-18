@@ -88,6 +88,26 @@ Cloudflare OAuth helper. It never accepts API keys or API tokens. Serialize uses
 of the shared OAuth helper: another process refreshing that session can invalidate
 an in-flight reader. Keep `TEMP`, `TMP` and npm cache on a disk with free space.
 
+The direct helper's OAuth session must cover the endpoints used by the chosen
+command: account Workers/settings/deployments, D1, R2 buckets/objects, queue
+configuration/metrics, zone DNS/routes/rulesets, Email Routing rules and Email
+Sending subdomains. Read-only `status`/`audit` require all inventory read
+permissions too. Routing changes and retirement additionally require write/delete
+permissions for their exact resource types. The supported Email Routing/Sending
+scopes needed here include `email-routing-rule.read`,
+`email-routing-rule.write` and `email-sending.read`.
+
+The live CLI inventory is currently blocked by the direct client's missing
+Email Routing/Sending scopes: `GET /zones/<zone>/email/routing/rules` returns
+HTTP 403, code 10000. The helper's existing session has separately passed D1,
+R2 and Workers reads after its timestamp-refresh bug was corrected. A different
+signed-in MCP session can read routing/sending; that does not grant the direct
+helper those permissions. Configure the required scopes through the supported
+OAuth client/dashboard flow and reauthorize that session before using this CLI.
+Do not substitute API keys/tokens or treat a partial inventory as cutover
+verification. This authorization prerequisite remains open; no production
+cutover or source retirement is claimed by these instructions.
+
 Every command defaults to a dry run. `status` and `audit` remain read-only even
 with `--execute`. D1 `POST /query` requests contain only `SELECT` statements.
 `--execute` also gates local state/backup writes. Private state paths must be
