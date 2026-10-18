@@ -158,6 +158,49 @@ describe('Mailflare import with real OmniMail migrations and mocked Cloudflare s
     assert.equal(f.objects.size, count)
   })
 
+  it('keeps a singleton incoming thread stable when a reply arrives in a later snapshot', async () => {
+    const f = fixture()
+    f.snapshot.tables.messages = f.snapshot.tables.messages.filter((source) => source.direction === 'inbound')
+    f.snapshot.tables.message_attachments = f.snapshot.tables.message_attachments.filter((source) => source.message_id === 'received')
+    f.snapshot.objects = f.snapshot.objects.filter((object) => object.key !== 'attachments/out')
+    await f.run()
+    const id = messageId(SOURCE_DATABASE, 'received')
+    const original = f.db.prepare('SELECT * FROM messages WHERE id = ?').get(id)!
+    f.snapshot.tables.messages.push({ ...f.snapshot.tables.messages[0], id: 'later-reply', provider_message_id: '<reply@example.test>', raw_r2_key: null, in_reply_to: 'same@example.test' })
+    f.snapshot.createdAt = '2026-10-18T12:01:00Z'
+    const receipt = await f.run()
+    assert.equal(receipt.counts.newMessages, 1)
+    assert.deepEqual(f.db.prepare('SELECT * FROM messages WHERE id = ?').get(id), original)
+    assert.equal(f.db.prepare('SELECT storage_used_bytes FROM users').get()?.storage_used_bytes, receipt.counts.quotaBytes)
+    const rows = f.db.prepare('SELECT references_header FROM messages').all()
+    const marker = `<mfl-thread-${sha256(`${SOURCE_DATABASE}:shared-source-thread`).slice(0, 32)}@mailflare.invalid>`
+    assert.ok(rows.every((row) => String(row.references_header).includes(marker)))
+  })
+
+  it('keeps sent IDs and threading stable when a delayed incoming self-copy arrives', async () => {
+    const f = fixture()
+    const received = f.snapshot.tables.messages.find((source) => source.id === 'received')!
+    const incomingAttachment = f.snapshot.tables.message_attachments.find((source) => source.message_id === 'received')!
+    const incomingObjects = f.snapshot.objects.filter((object) => object.key !== 'attachments/out')
+    f.snapshot.tables.messages = f.snapshot.tables.messages.filter((source) => source.direction === 'outbound')
+    f.snapshot.tables.message_attachments = f.snapshot.tables.message_attachments.filter((source) => source.message_id === 'sent')
+    f.snapshot.objects = f.snapshot.objects.filter((object) => object.key === 'attachments/out')
+    await f.run()
+    const id = messageId(SOURCE_DATABASE, 'sent')
+    const original = f.db.prepare('SELECT * FROM messages WHERE id = ?').get(id)!
+    assert.equal(original.message_id, `<mfl-${id}@mailflare.invalid>`)
+    assert.ok(String(original.references_header).includes('<same@example.test>'))
+    f.snapshot.tables.messages.push(received)
+    f.snapshot.tables.message_attachments.push(incomingAttachment)
+    f.snapshot.objects.push(...incomingObjects)
+    f.snapshot.createdAt = '2026-10-18T12:01:00Z'
+    const receipt = await f.run()
+    assert.equal(receipt.counts.newMessages, 1)
+    assert.deepEqual(f.db.prepare('SELECT * FROM messages WHERE id = ?').get(id), original)
+    assert.equal(f.db.prepare('SELECT message_id FROM messages WHERE id = ?').get(messageId(SOURCE_DATABASE, 'received'))?.message_id, '<same@example.test>')
+    assert.equal(f.db.prepare('SELECT storage_used_bytes FROM users').get()?.storage_used_bytes, receipt.counts.quotaBytes)
+  })
+
   it('resumes after an ambiguous committed response without double-counting', async () => {
     const f = fixture()
     f.failCommit()

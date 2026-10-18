@@ -166,12 +166,13 @@ export async function planSnapshot(snapshot, credentials, target, snapshotHash =
     const row = message.row
     const refs = references(row.references_header)
     const key = `${row.mailbox_address}:${row.message_id}`
-    if (row.message_id && used.has(key)) {
-      refs.push(row.message_id)
+    if (row.direction === 'outgoing' || row.message_id && used.has(key)) {
+      // Sent copies need their own ID before a delayed incoming self-copy exists.
+      if (row.message_id) refs.push(row.message_id)
       row.message_id = `<mfl-${row.id}@mailflare.invalid>`
     }
-    if (row.message_id) used.add(key)
-    if (message.source.thread_id && result.some((other) => other !== message && other.mailbox.address === message.mailbox.address && other.source.thread_id === message.source.thread_id)) {
+    if (row.direction === 'incoming' && row.message_id) used.add(key)
+    if (message.source.thread_id) {
       refs.push(`<mfl-thread-${sha256(`${snapshot.database}:${message.source.thread_id}`).slice(0, 32)}@mailflare.invalid>`)
     }
     row.references_header = [...new Set(refs)].join(' ') || null
