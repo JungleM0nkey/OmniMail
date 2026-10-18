@@ -7,6 +7,10 @@ export function stableJson(value) {
   return JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item)
 }
+export function stateFingerprint(name, rows, key) {
+  return { name, rows: rows.length, sha256: sha256(stableJson([...rows]
+    .sort((a, b) => String(a[key]).localeCompare(String(b[key]), 'en')))) }
+}
 export function ensure(condition, code) {
   if (!condition) throw new Error(code)
 }

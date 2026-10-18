@@ -182,11 +182,28 @@ describe('independent Mailflare verification', () => {
     expect(receipt.status).toBe('PASSED')
     expect(receipt.parity.verified).toBe(true)
     expect(receipt.parity.counts).toMatchObject({ sourceMessages: 2, sourceAttachments: 1, sourceObjects: 2, verifiedObjects: 2, verifiedBodies: 2 })
+    expect(receipt.targetState.tables.map(({ name, rows }) => ({ name, rows }))).toEqual([
+      { name: 'messages', rows: 2 }, { name: 'attachments', rows: 1 }, { name: 'message_search', rows: 2 }, { name: 'settings', rows: 2 },
+    ])
+    expect(receipt.targetState.objects).toHaveLength(4)
+    expect(receipt.targetState.tables.every((entry) => /^[a-f0-9]{64}$/.test(entry.sha256))).toBe(true)
     expect(receipt.remainingAcceptance.every((item) => item.status === 'UNVERIFIED')).toBe(true)
     expect(JSON.stringify(receipt)).not.toContain(privateBody)
     expect(JSON.stringify(receipt)).not.toContain(credentials.password)
     expect(fixture.requests.filter(({ options }) => options.method && options.method !== 'GET').map(({ path }) => path))
       .toEqual(['/api/login', '/api/logout', '/api/logout', '/api/logout'])
+  })
+
+  it('keeps retirement fingerprints stable for unrelated new live mail and reads every list page', async () => {
+    const fixture = await targetFixture()
+    const before = await verifyImport(fixture.options, fixture)
+    fixture.messages.push({ ...fixture.messages[1], id: 'new-live-mail', message_id: '<new@example.com>',
+      is_read: 1, is_starred: 0, raw_key: null, body_key: null, attachment_count: 0, size: 0, quota_bytes: 0, stored_bytes: 0 })
+    const after = await verifyImport(fixture.options, fixture)
+    expect(after.status).toBe('PASSED')
+    expect(after.parity.counts.targetMessages).toBe(3)
+    expect(after.targetState).toEqual(before.targetState)
+    expect(fixture.requests.some(({ path }) => path.includes('cursor=1'))).toBe(true)
   })
 
   it.each(['body', 'attachment-bytes', 'archived-metadata', 'missing-message', 'api-body', 'api-counts'])(

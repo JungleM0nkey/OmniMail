@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util'
 import {
   archiveKey, attachmentId, equal, ensure, expectedAttachment, expectedMessages, expectedSummary,
   mailboxAddress, messageId, objectKey, searchContent, sha256, stableJson,
-  validateSnapshot, verifyArchive, verifyFramePolicy,
+  stateFingerprint, validateSnapshot, verifyArchive, verifyFramePolicy,
 } from './verify-mailflare-snapshot.mjs'
 
 const TIMEOUT = 30_000
@@ -122,6 +122,7 @@ export async function verifyImport(options, clients) {
   let expected
   if (!await check('source-mapping', async () => { expected = await expectedMessages(snapshot) })) return finish()
   const { cf, api } = clients
+  const observedObjects = new Map()
   await check('worker-bindings', async () => {
     const settings = await cf.settings()
     const bindings = settings.bindings || []
@@ -186,7 +187,7 @@ export async function verifyImport(options, clients) {
       search = await cf.query('SELECT ms.* FROM message_search ms JOIN messages m ON m.id = ms.message_id JOIN mailboxes mb ON mb.address = m.mailbox_address WHERE mb.user_id = ?', [actor.id])
       draftCount = (await cf.query('SELECT COUNT(*) AS count FROM mail_drafts WHERE user_id = ?', [actor.id]))[0].count
       const prefix = `mailflare_import:${snapshot.database}:`
-      archives = await cf.query('SELECT key, value FROM settings WHERE substr(key, 1, ?) = ?', [prefix.length, prefix])
+      archives = await cf.query('SELECT * FROM settings WHERE substr(key, 1, ?) = ?', [prefix.length, prefix])
     })
     if (!loaded) {
       unverified('message-parity', 'Target reads failed; no message data can be certified.')
@@ -219,6 +220,9 @@ export async function verifyImport(options, clients) {
         const bytes = await cf.object(objectKey(snapshot.database, object.key))
         equal(bytes.length, object.size, 'target.object.size.mismatch')
         equal(sha256(bytes), object.sha256, 'target.object.hash.mismatch')
+        observedObjects.set(objectKey(snapshot.database, object.key), {
+          key: objectKey(snapshot.database, object.key), size: bytes.length, sha256: sha256(bytes),
+        })
         receipt.parity.counts.verifiedObjects++
       })
     }
@@ -241,6 +245,7 @@ export async function verifyImport(options, clients) {
         const bytes = await cf.object(item.row.body_key)
         const body = JSON.parse(bytes.toString('utf8'))
         equal(body, item.body, 'target.message.body.mismatch')
+        observedObjects.set(item.row.body_key, { key: item.row.body_key, size: bytes.length, sha256: sha256(bytes) })
         receipt.parity.counts.verifiedBodies++
         const rawBytes = item.source.raw_r2_key ? model.objects.get(item.source.raw_r2_key).size : 0
         const storedBytes = rawBytes + bytes.length + item.attachments.reduce((sum, row) => sum + row.size, 0)
@@ -335,6 +340,16 @@ export async function verifyImport(options, clients) {
       nativeMetadataSha256: sha256(stableJson(expected.map((item) => item.row).sort((a, b) => a.id.localeCompare(b.id)))),
       bodyManifestSha256: sha256(stableJson(expected.map((item) => ({ id: item.row.id, sha256: sha256(stableJson(item.body)) })).sort((a, b) => a.id.localeCompare(b.id)))),
       archivedMetadataSha256: sha256(stableJson(expected.map((item) => ({ source: item.source.id, sha256: sha256(stableJson(item.source)) })).sort((a, b) => a.source.localeCompare(b.source)))),
+    }
+    receipt.targetState = {
+      tables: [
+        stateFingerprint('messages', messages.filter((row) => row.id.startsWith('mfl_'))
+          .map(({ _mailbox_hidden: _hidden, ...row }) => row), 'id'),
+        stateFingerprint('attachments', attachments.filter((row) => row.id.startsWith('mfl_a_')), 'id'),
+        stateFingerprint('message_search', search.filter((row) => row.message_id.startsWith('mfl_')), 'message_id'),
+        stateFingerprint('settings', archives, 'key'),
+      ],
+      objects: [...observedObjects.values()].sort((a, b) => a.key.localeCompare(b.key, 'en')),
     }
   } finally {
     if (loggedIn) await check('owned-session-cleanup', async () => {

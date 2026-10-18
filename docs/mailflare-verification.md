@@ -38,6 +38,9 @@ The private JSON receipt is created with exclusive creation and mode 0600;
 choose an existing private directory on Windows so its inherited ACL is private.
 An existing receipt is never replaced. The receipt contains counts, hashes,
 revision/target identities, and safe check codes, with no passwords or bodies.
+`targetState` records actual full imported D1 row hashes and the byte hashes of
+every observed raw, attachment, and body object for the retirement gate to
+independently recheck target drift. It excludes unrelated new live mail.
 
 `parity.verified: true` and exit 0 mean every required migration parity check
 passed. `FAILED` means a checked condition failed. `UNVERIFIED` records a check
