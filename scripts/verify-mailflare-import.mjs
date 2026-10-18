@@ -38,7 +38,8 @@ export function cloudflareReader(account, database, bucket, token, request = fet
       return result[0].results
     },
     async object(key) {
-      return Buffer.from(await (await read(`/r2/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`)).arrayBuffer())
+      const path = key.split('/').map(encodeURIComponent).join('/')
+      return Buffer.from(await (await read(`/r2/buckets/${encodeURIComponent(bucket)}/objects/${path}`)).arrayBuffer())
     },
     settings: () => json('/workers/scripts/omni-mail/settings'),
     deployments: () => json('/workers/scripts/omni-mail/deployments'),
@@ -363,11 +364,13 @@ async function main() {
   const snapshot = JSON.parse(snapshotBytes.toString('utf8').replace(/^\uFEFF/, ''))
   const credentials = readJson(options.credentials)
   ensure(typeof credentials.email === 'string' && typeof credentials.password === 'string' && credentials.password, 'credentials.email-and-password.required')
-  execFileSync('rtk', ['proxy', 'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-    join(homedir(), '.cloudflare-oauth', 'cf-oauth-login.ps1')], { stdio: 'ignore' })
+  try {
+    execFileSync('rtk', ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      join(homedir(), '.cloudflare-oauth', 'cf-oauth-login.ps1')], { stdio: 'ignore' })
+  } catch { throw new Error('cloudflare.oauth-helper.failed') }
   const { access_token: token } = readJson(join(homedir(), '.cloudflare-oauth', 'tokens.json'))
   ensure(typeof token === 'string' && token, 'cloudflare.oauth.required')
-  const revision = execFileSync('rtk', ['proxy', 'git', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  const revision = execFileSync('rtk', ['git', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   const receipt = await verifyImport({ ...options, snapshot, snapshotBytes, credentials, revision }, {
     cf: cloudflareReader(options.account, options.database, options.bucket, token),
     api: apiReader(options.base),

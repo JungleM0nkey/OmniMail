@@ -137,6 +137,35 @@ describe('independent Mailflare verification', () => {
     expect(received.body.html).toBe('')
   })
 
+  it('keeps an outgoing row stable when its delayed incoming copy arrives', async () => {
+    const full = snapshotFixture()
+    const initial = structuredClone(full)
+    initial.tables.messages = [initial.tables.messages[0]]
+    initial.objects = initial.objects.filter((entry) => !entry.key.startsWith('raw/'))
+    const [before] = await expectedMessages(initial)
+    const after = (await expectedMessages(full)).find((entry) => entry.source.id === 'sent')!
+    expect(before.row).toEqual(after.row)
+    expect(before.row.message_id).toMatch(/^<mfl-mfl_/)
+    expect(before.row.references_header).toContain('<same@example.com>')
+    expect(before.row.references_header).toContain('<mfl-thread-')
+    initial.tables.messages[0].provider_message_id = null as never
+    expect((await expectedMessages(initial))[0].row.message_id).toBe(before.row.message_id)
+  })
+
+  it('keeps a received singleton stable when a different Message-ID joins its thread', async () => {
+    const snapshot = snapshotFixture()
+    snapshot.tables.messages = [snapshot.tables.messages[1]]
+    snapshot.tables.message_attachments = []
+    snapshot.objects = snapshot.objects.filter((entry) => entry.key.startsWith('raw/'))
+    const [before] = await expectedMessages(snapshot)
+    snapshot.tables.messages.push({ ...snapshot.tables.messages[0], id: 'reply', provider_message_id: 'reply@example.com',
+      raw_r2_key: 'raw/reply.eml', in_reply_to: 'same@example.com' as never })
+    snapshot.objects.push(object('raw/reply.eml', Buffer.from('Date: Sat, 17 Oct 2026 16:00:00 +0000\r\nMessage-ID: <reply@example.com>\r\n\r\nReply\r\n')))
+    const after = (await expectedMessages(snapshot)).find((entry) => entry.source.id === 'received')!
+    expect(before.row).toEqual(after.row)
+    expect(before.row.references_header).toMatch(/^<mfl-thread-/)
+  })
+
   it.each(['bytes', 'hash', 'missing-object', 'duplicate-id', 'orphan'])('refuses a snapshot with %s corruption', (kind) => {
     const snapshot = snapshotFixture()
     if (kind === 'bytes') snapshot.objects[0].base64 = Buffer.from('different').toString('base64')
@@ -211,6 +240,8 @@ describe('independent Mailflare verification', () => {
     expect(new URL(calls[0].url).origin).toBe('https://api.cloudflare.com')
     expect(calls[0].init.redirect).toBe('error')
     expect(JSON.parse(calls[0].init.body as string)).toEqual({ sql: 'SELECT id FROM messages WHERE id = ?', params: ['opaque-id'] })
+    await reader.object('mailflare/source/objects/some key+value')
+    expect(new URL(calls[1].url).pathname).toContain('/objects/mailflare/source/objects/some%20key%2Bvalue')
   })
 
   it('keeps the owner cookie only in signed-in requests and refuses redirects', async () => {

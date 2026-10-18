@@ -37,7 +37,7 @@ export function addresses(value) {
 
 export function validateSnapshot(snapshot) {
   ensure(snapshot && /^[a-f0-9]{32}$/i.test(snapshot.account || ''), 'snapshot.account.invalid')
-  ensure(typeof snapshot.database === 'string' && snapshot.database.length > 0, 'snapshot.database.missing')
+  ensure(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(snapshot.database || ''), 'snapshot.database.invalid')
   ensure(typeof snapshot.bucket === 'string' && snapshot.bucket.length > 0, 'snapshot.bucket.missing')
   ensure(Number.isFinite(Date.parse(snapshot.createdAt)), 'snapshot.createdAt.invalid')
   for (const table of ['messages', 'message_attachments', 'mailboxes', 'domains']) {
@@ -108,15 +108,14 @@ export function expectedMessage(snapshot, source, parsed = new Map()) {
   const id = messageId(snapshot.database, source.id)
   const effectiveId = (item) => normalizedMessageId(item.provider_message_id || parsed.get(item.id)?.messageId)
   const providerId = effectiveId(source)
-  const duplicates = snapshot.tables.messages.filter((item) => item.mailbox_id === source.mailbox_id
+  const duplicates = snapshot.tables.messages.filter((item) => item.direction === 'inbound' && item.mailbox_id === source.mailbox_id
     && effectiveId(item) === providerId && providerId)
     .sort((a, b) => Number(b.direction === 'inbound') - Number(a.direction === 'inbound') || a.id.localeCompare(b.id))
   const canonical = !providerId || duplicates[0]?.id === source.id
-  const nativeId = canonical ? providerId : `<mfl-${id}@mailflare.invalid>`
+  const nativeId = incoming && canonical ? providerId : `<mfl-${id}@mailflare.invalid>`
   const references = (source.references_header || '').match(/<[^<>\s]+>|[^\s,]+/g)?.map(normalizedMessageId) || []
-  if (!canonical && providerId) references.push(providerId)
-  if (source.thread_id && snapshot.tables.messages.some((item) => item.id !== source.id
-    && item.mailbox_id === source.mailbox_id && item.thread_id === source.thread_id)) {
+  if (nativeId !== providerId && providerId) references.push(providerId)
+  if (source.thread_id) {
     references.push(`<mfl-thread-${sha256(`${snapshot.database}:${source.thread_id}`).slice(0, 32)}@mailflare.invalid>`)
   }
   const attachments = snapshot.tables.message_attachments.filter((item) => item.message_id === source.id)
