@@ -140,14 +140,22 @@ export function oauthApi({ fetcher = fetch, home = homedir(), spawn = spawnSync 
 
 export async function list(api, path, field) {
   const result = [], cursors = new Set()
+  const rulesets = path === `${Z}/rulesets`
   let cursor, page = 1
   for (let n = 0; n < 1000; n++) {
-    const query = new URLSearchParams({ per_page: '100', ...(cursor ? { cursor } : { page: String(page) }) })
+    const query = new URLSearchParams({ per_page: rulesets ? '50' : '100', ...(cursor ? { cursor } : rulesets ? {} : { page: String(page) }) })
     const data = await api('GET', `${path}${path.includes('?') ? '&' : '?'}${query}`)
     const items = field ? data.result?.[field] : data.result
     requireThat(Array.isArray(items), 'Invalid list response; refusing incomplete inventory.')
     result.push(...items)
     const info = data.result_info
+    if (rulesets) {
+      const next = info?.cursors?.after
+      if (next === undefined || next === null || next === '') return result
+      requireThat(typeof next === 'string', 'Invalid ruleset inventory cursor.')
+      requireThat(!cursors.has(next), 'Repeated inventory cursor.')
+      cursors.add(next); cursor = next; continue
+    }
     if (info?.is_truncated === false) return result
     if (info?.cursor && (info.is_truncated === true || field === 'buckets')) {
       requireThat(!cursors.has(info.cursor), 'Repeated inventory cursor.')
