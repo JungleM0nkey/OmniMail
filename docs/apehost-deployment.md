@@ -89,7 +89,8 @@ of the shared OAuth helper: another process refreshing that session can invalida
 an in-flight reader. Keep `TEMP`, `TMP` and npm cache on a disk with free space.
 
 The direct helper's OAuth session must cover the endpoints used by the chosen
-command: account Workers/settings/deployments, D1, R2 buckets/objects, queue
+command: account Workers/settings/deployments, Durable Object namespaces/objects,
+D1, R2 buckets/objects, queue
 configuration/metrics, zone DNS/routes/rulesets, Email Routing rules and Email
 Sending subdomains. Read-only `status`/`audit` require all inventory read
 permissions too. Routing changes and retirement additionally require write/delete
@@ -121,11 +122,35 @@ rtk node scripts/apehost-cutover.mjs prepare --state D:/private-mail/cutover-sta
 ```
 
 Preparation captures all account Workers and their relevant resource bindings,
-D1/R2/queues, custom domains, the zone's routes/rulesets/email routing, DNS and
+D1/R2/queues, the complete account Durable Object namespace catalog,
+custom domains, the zone's routes/rulesets/email routing, DNS and
 Email Sending subdomains. It requires the original Mailflare custom domain and
 catch-all, a separately staged OmniMail database/storage/backups, and known queue
 ownership. Later commands reject changed Worker identity/content, recreated
 source queues/buckets, unexpected references or routing changes.
+
+The only permitted source Durable Object is `mailflare_RealtimeHub`, namespace
+`702f544aa78e480db6bb37f2aac86380`, class `RealtimeHub`, binding `REALTIME`.
+The shipped Worker ETag must be exactly
+`203f2efecc8d108bb8e7ea28c81068b06725d5f539dccd02c37e86f56194bd3c`.
+Its independently audited shipped class uses WebSocket attachments for derived
+user IDs and reads mail state from D1; it has no storage, SQL, transaction or
+alarm calls. Mail bodies and attachments are persisted before notification.
+The reviewed module SHA-256 is
+`1ca6ac183d86b79010282f2b5ed3a1612a9d160667adfc9fb0434cc7c21b0985`.
+Only its exact `WORKER_SELF_REFERENCE` service binding to `mailflare` in
+`production` is allowed. Unknown namespaces/classes, foreign references,
+changed code and missing or true `hasStoredData` flags stop retirement.
+
+Preparation reads every namespace catalog page and follows the object's cursor
+through its final empty cursor, even after a short page. Before saving success,
+it creates `<state-path>.source-worker.json` outside the repository. This
+immutable private archive contains the original Worker download bytes, HTTP
+content type and ETag, full settings, namespace catalog and empty-object proof.
+It is captured once and reused on resume. Do not edit or remove it: its hash is
+pinned in state and it is required by later commands. The class audit and live
+empty-object proof justify this one exception; they do not authorize discarding
+storage from any other Durable Object.
 
 The migration snapshot is a JSON object with `createdAt`, `account`, `database`,
 `bucket`, `tables` containing table-row arrays, and `objects` containing
@@ -147,6 +172,9 @@ the exact migration snapshot, full source D1 export, original control-plane
 inventory and exact parity receipt. It downloads every uploaded artifact and
 checks SHA-256 independently. Existing keys containing different bytes cause a
 refusal. Cutover, rollback and decommission recheck both backup locations.
+For the reviewed Hub, a fifth artifact, `source-worker.json`, preserves the
+exact original Worker archive in both locations, with the same download/hash
+checks. A missing or corrupted primary archive or backup copy stops progress.
 Renewed verifier receipts for the same source snapshot get a separate immutable
 namespace; earlier proof artifacts remain intact.
 
@@ -170,7 +198,12 @@ best-effort, so the runtime receipt must separately attest that source producers
 in-flight work and retries have quiesced. No queue is purged.
 
 Decommission removes source queue consumers, then the exact Mailflare Worker
-without `force`, then queues only after consumers/producers are absent. It checks
+with `force=false`, then queues only after consumers/producers are absent.
+Immediately before Worker deletion it rechecks complete ownership and all Hub
+object cursors with `hasStoredData: false`. Both the Worker and its namespace
+must then be absent before any queue, R2 or D1 retirement continues. A surviving
+namespace stops the command, including after a lost response; the tool never
+deletes a namespace directly or forces deletion. It checks
 and deletes each backed-up source R2 object before deleting the empty source
 bucket, rechecks full source D1 freshness before database deletion, and removes
 only the saved obsolete rule ID. It preserves OmniMail resources, unrelated
@@ -182,7 +215,7 @@ or resource disappearing without a corresponding saved intent causes refusal.
 If the process was forcibly terminated and left a `.lock` file, verify that no
 cutover process is running before removing that exact lock to resume.
 
-The final `audit` enumerates Mailflare Worker, D1, R2, queue, custom-domain,
+The final `audit` enumerates Mailflare Worker, D1, R2, queue, Durable Object namespace, custom-domain,
 route, rule and Worker-binding leftovers. Account resources are checked across
 the account; routes/rulesets/email routing are scoped to the named zone. Worker
 route metadata also blocks retirement if Mailflare has routes in another zone.
@@ -249,6 +282,9 @@ Cutover-tool checks are separate from application acceptance:
 - `rtk node --test scripts/apehost-cutover.node-test.mjs` covers dry runs, destructive
   refusal, receipt mismatches, source freshness, local/remote backup corruption,
   queue ownership/backlog, exact deletion scope, rollback and interrupted resume.
+  It also covers complete Durable Object pagination, exact source-review
+  boundaries, immutable Worker archives, fresh storage refusal, Worker/namespace
+  absence after interrupted deletion, and sanitized malformed private JSON.
 - `rtk node scripts/check-file-lines.mjs` checks repository file size limits.
 - No mocked test establishes live delivery or Browser Harness acceptance.
 

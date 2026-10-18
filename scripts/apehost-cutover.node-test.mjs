@@ -65,14 +65,35 @@ function fixture(t) {
   for (const o of data.objects) buckets.get(SITE.bucket).set(o.key, Buffer.from(o.base64, 'base64'))
   for (const o of targetObjects) buckets.get(SITE.targetBucket).set(o.key, Buffer.from(o.base64, 'base64'))
   const calls = [], mutations = [], metrics = new Map(), failAfter = new Set()
+  const storage = { namespaces: [], pages: [{ result: [], result_info: { cursor: '' } }], keepNamespace: false,
+    download: { bytes: Buffer.from('reviewed-worker-fixture'), contentType: 'multipart/form-data; boundary=fixture', etag: `"${review.etag}"` } }
   const envelope = (result, result_info) => ({ result: copy(result), ...(result_info ? { result_info } : {}) })
   const api = async (method, path, opts = {}) => {
     calls.push({ method, path, body: opts.body })
     const url = new URL(`https://api.cloudflare.com${path}`), p = url.pathname
+    const override = await storage.intercept?.({ method, path, p, url, opts })
+    if (override !== undefined) return override
     const isRead = method === 'GET' || method === 'POST' && p.endsWith('/query') && (opts.body.sql?.startsWith('SELECT ') || opts.body.batch?.every((q) => q.sql.startsWith('SELECT ')))
     if (!isRead) mutations.push({ method, path, body: opts.body })
     let result
     if (method === 'GET') {
+      if (p === `${A}/workers/durable_objects/namespaces`) {
+        const page = Number(url.searchParams.get('page')), per_page = Number(url.searchParams.get('per_page'))
+        assert.ok(page >= 1 && per_page >= 1 && per_page <= 1000)
+        const result = storage.namespaces.slice((page - 1) * per_page, page * per_page)
+        return envelope(result, { page, per_page, count: result.length, total_count: storage.namespaces.length })
+      }
+      if (p === `${A}/workers/durable_objects/namespaces/${review.id}/objects`) {
+        assert.equal(url.searchParams.get('limit'), '1000')
+        const cursor = url.searchParams.get('cursor') ?? ''
+        const index = cursor ? storage.pages.findIndex((page) => page.result_info?.cursor === cursor) + 1 : 0
+        assert.ok(index >= 0 && storage.pages[index], 'Unexpected object cursor')
+        return copy(storage.pages[index])
+      }
+      if (p === `${A}/workers/scripts/${SITE.source}`) {
+        assert.equal(opts.binary, true); assert.equal(opts.responseMetadata, true)
+        return { ...storage.download, bytes: Buffer.from(storage.download.bytes) }
+      }
       const paths = { [`${A}/workers/scripts`]: view.workers, [`${A}/d1/database`]: view.databases, [`${A}/queues`]: view.queues,
         [`${A}/workers/domains`]: view.domains, [`${Z}/workers/routes`]: view.routes, [`${Z}/rulesets`]: view.rulesets.map(({ id }) => ({ id })),
         [`${Z}/dns_records`]: view.dns, [`${Z}/email/routing/rules`]: view.emailRules, [`${Z}/email/sending/subdomains`]: view.sending, [`${Z}/email/routing/rules/catch_all`]: view.catchAll }
@@ -115,7 +136,9 @@ function fixture(t) {
       const id = p.split('/')[4], consumer = p.split('/').at(-1), q = view.queues.find((q) => q.queue_id === id)
       q.consumers = q.consumers.filter((c) => c.consumer_id !== consumer); q.consumers_total_count = q.consumers.length; result = envelope({})
     } else if (method === 'DELETE' && p === `${A}/workers/scripts/${SITE.source}`) {
+      assert.equal(url.searchParams.get('force'), 'false')
       view.workers = view.workers.filter((w) => w.id !== SITE.source); delete view.settings[SITE.source]
+      if (!storage.keepNamespace) storage.namespaces = storage.namespaces.filter((n) => n.script !== SITE.source)
       for (const q of view.queues) { q.producers = []; q.producers_total_count = 0 } result = envelope({})
     } else if (method === 'DELETE' && p.startsWith(`${A}/queues/`)) { view.queues = view.queues.filter((q) => q.queue_id !== p.split('/').at(-1)); result = envelope({})
     } else if (method === 'DELETE' && p === `${A}/d1/database/${SITE.database}`) { view.databases = view.databases.filter((d) => d.uuid !== SITE.database); result = envelope({})
@@ -127,7 +150,20 @@ function fixture(t) {
   const run = (command, execute = false) => runCutover(command, { ...options, execute }, { api, now: () => '2026-10-18T20:00:00.000Z' })
   const ready = async () => { await run('prepare', true); await run('backup', true) }
   const cutover = async () => { await ready(); await run('cutover', true) }
-  return { api, run, ready, cutover, view, tables, targetTables, buckets, calls, mutations, metrics, failAfter, options, data, snapshot, parity, runtime }
+  return { api, run, ready, cutover, view, tables, targetTables, buckets, calls, mutations, metrics, failAfter, options, data, snapshot, parity, runtime, storage }
+}
+
+const review = { id: '702f544aa78e480db6bb37f2aac86380', etag: '203f2efecc8d108bb8e7ea28c81068b06725d5f539dccd02c37e86f56194bd3c' }
+function audited(f) {
+  f.view.workers[0].etag = review.etag
+  f.view.workers[0].named_handlers = [{ name: 't', handlers: ['fetch'] }, { name: 'RealtimeHub', handlers: ['class'] }]
+  f.view.settings[SITE.source].bindings.push(
+    { type: 'durable_object_namespace', name: 'REALTIME', class_name: 'RealtimeHub', namespace_id: review.id },
+    { type: 'service', name: 'WORKER_SELF_REFERENCE', environment: 'production', service: SITE.source })
+  f.view.settings[SITE.source].observability = { enabled: true }
+  f.storage.namespaces = [{ id: review.id, name: 'mailflare_RealtimeHub', script: SITE.source, class: 'RealtimeHub', use_sqlite: true }]
+  f.storage.pages = [{ result: [{ id: 'a'.repeat(64), hasStoredData: false }], result_info: { cursor: 'next/+?' } }, { result: [], result_info: { cursor: '' } }]
+  return f
 }
 
 test('status/audit and default preparation never mutate or save mail', async (t) => {
@@ -359,4 +395,160 @@ test('OAuth API refuses a failed helper and never sends credentials to redirects
   await api('GET', `${A}/queues`)
   assert.equal(request.options.redirect, 'error'); assert.equal(request.url, `https://api.cloudflare.com/client/v4${A}/queues`)
   await assert.rejects(api('GET', '/accounts/another/queues'), /Unexpected Cloudflare scope/)
+})
+
+test('malformed private JSON never exposes credential or snapshot bytes', (t) => {
+  const f = fixture(t), marker = 'PRIVATE_FIXTURE_SECRET'
+  const safe = (error) => error.message === 'Private JSON input is invalid.' && !error.stack.includes(marker)
+  writeFileSync(f.options.snapshot, marker)
+  assert.throws(() => readSnapshot(f.options.snapshot), safe)
+  writeFileSync(f.options.snapshot, '\uFEFF' + JSON.stringify(f.data))
+  assert.deepEqual(readSnapshot(f.options.snapshot).data, f.data)
+  const home = join(f.options.state, '..', 'malformed-home'); mkdirSync(join(home, '.cloudflare-oauth'), { recursive: true })
+  writeFileSync(join(home, '.cloudflare-oauth', 'tokens.json'), marker)
+  assert.throws(() => oauthApi({ home, spawn: () => ({ status: 0 }) }), safe)
+})
+
+test('OAuth binary metadata is opt-in and preserves raw Worker headers without changing R2 reads', async (t) => {
+  const f = fixture(t), home = join(f.options.state, '..', 'binary-home')
+  mkdirSync(join(home, '.cloudflare-oauth'), { recursive: true })
+  json(join(home, '.cloudflare-oauth', 'tokens.json'), { access_token: 'fixture-only' })
+  const bytes = Buffer.from([0, 255, 3, 13, 10]), headers = { 'Content-Type': 'multipart/form-data; boundary=test', ETag: `"${review.etag}"` }
+  const api = oauthApi({ home, spawn: () => ({ status: 0 }), fetcher: async () => new Response(bytes, { headers }) })
+  assert.deepEqual(await api('GET', objectPath(SITE.bucket, 'raw/test'), { binary: true }), bytes)
+  assert.deepEqual(await api('GET', `${A}/workers/scripts/${SITE.source}`, { binary: true, responseMetadata: true }),
+    { bytes, contentType: headers['Content-Type'], etag: headers.ETag })
+})
+
+test('reviewed empty Hub archives original bytes, headers, full settings and cursor proof once', async (t) => {
+  const f = audited(fixture(t))
+  const status = await f.run('audit')
+  assert.deepEqual(status.leftovers.durableObjects.map((n) => n.id), [review.id])
+  await f.run('prepare'); assert.equal(existsSync(`${f.options.state}.source-worker.json`), false)
+  assert.equal(f.mutations.length, 0)
+  f.calls.length = 0
+  await f.ready()
+  const state = JSON.parse(readFileSync(f.options.state)), bytes = readFileSync(state.sourceArchive.path), archive = JSON.parse(bytes)
+  assert.equal(sha256(bytes), state.sourceArchive.sha256)
+  assert.equal(Buffer.from(archive.worker.bodyBase64, 'base64').toString(), f.storage.download.bytes.toString())
+  assert.equal(archive.worker.contentType, f.storage.download.contentType)
+  assert.deepEqual(archive.settings, f.view.settings[SITE.source]); assert.equal(archive.empty.pages.length, 2)
+  assert.equal(archive.empty.pages.at(-1).result_info.cursor, '')
+  assert.equal(state.backup.artifacts['source-worker.json'], state.sourceArchive.sha256)
+  await f.run('prepare', true); await f.run('backup', true)
+  assert.equal(f.calls.filter((c) => c.path === `${A}/workers/scripts/${SITE.source}`).length, 1)
+  assert.deepEqual(readFileSync(state.sourceArchive.path), bytes)
+})
+
+test('complete namespace catalog finds the source beyond the first 1000 records', async (t) => {
+  const f = audited(fixture(t)), source = f.storage.namespaces[0]
+  f.storage.namespaces = [...Array.from({ length: 1000 }, (_, i) => ({ id: (i + 1).toString(16).padStart(32, '0'), name: `other_${i}`, script: 'other', class: 'Other', use_sqlite: true })), source]
+  const result = await f.run('status')
+  assert.deepEqual(result.leftovers.durableObjects.map((n) => n.id), [review.id])
+  assert.ok(f.calls.some((c) => c.path.includes('/durable_objects/namespaces?') && c.path.includes('page=2')))
+  await f.run('prepare', true)
+})
+
+test('uncertain namespace catalog pagination refuses incomplete retirement inventory', async (t) => {
+  for (const result_info of [{ page: 1, per_page: 1000, count: 1 }, { page: 1, per_page: 1000, count: 0, total_count: 1 }, { page: 2, per_page: 1000, count: 1, total_count: 1 }]) {
+    const f = audited(fixture(t))
+    f.storage.intercept = ({ p }) => p.endsWith('/durable_objects/namespaces') ? { result: copy(f.storage.namespaces), result_info } : undefined
+    await assert.rejects(f.run('prepare', true), /namespace catalog/i)
+    assert.equal(f.mutations.length, 0)
+  }
+})
+
+test('namespace catalog refuses duplicate identities and changing totals across pages', async (t) => {
+  for (const duplicate of [true, false]) {
+    const f = audited(fixture(t)), source = f.storage.namespaces[0]
+    f.storage.namespaces = [...Array.from({ length: 1000 }, (_, i) => ({ ...source, id: (i + 1).toString(16).padStart(32, '0'), script: 'other', name: `other_${i}` })), source]
+    f.storage.intercept = ({ p, url }) => p.endsWith('/durable_objects/namespaces') && url.searchParams.get('page') === '2'
+      ? { result: [duplicate ? f.storage.namespaces[0] : source], result_info: { page: 2, per_page: 1000, count: 1, total_count: duplicate ? 1001 : 1002 } } : undefined
+    await assert.rejects(f.run('prepare', true), /namespace catalog/i)
+    assert.equal(f.mutations.length, 0)
+  }
+})
+
+test('object pagination follows short pages and refuses stored, missing flags, invalid or repeated cursors', async (t) => {
+  for (const page of [
+    { result: [{ id: 'b'.repeat(64), hasStoredData: true }], result_info: { cursor: '' } },
+    { result: [{ id: 'b'.repeat(64) }], result_info: { cursor: '' } },
+    { result: [{ id: 'b'.repeat(64), hasStoredData: null }], result_info: { cursor: '' } },
+    { result: [{ id: 'a'.repeat(64), hasStoredData: false }], result_info: { cursor: '' } },
+    { result: [], result_info: { cursor: 'next/+?' } }, { result: [], result_info: { cursor: 3 } },
+    { result: [], result_info: {} },
+  ]) {
+    const f = audited(fixture(t)); f.storage.pages[1] = page
+    await assert.rejects(f.run('prepare', true), /Durable Object|object cursor/i)
+    assert.equal(existsSync(f.options.state), false); assert.equal(f.mutations.length, 0)
+  }
+})
+
+test('Hub exception rejects changed ETag, extra namespaces/classes, foreign refs and altered self-reference', async (t) => {
+  for (const change of [
+    (f) => { f.view.workers[0].etag = 'unreviewed-code' },
+    (f) => { f.storage.download.etag = 'unreviewed-download' },
+    (f) => { f.storage.download.contentType = 'application/javascript' },
+    (f) => { f.storage.namespaces.push({ ...f.storage.namespaces[0], id: 'f'.repeat(32), class: 'Unknown' }) },
+    (f) => { f.view.workers[0].named_handlers.push({ name: 'Unknown', handlers: ['class'] }) },
+    (f) => { f.view.workers[0].named_handlers.pop() },
+    (f) => { f.view.settings[SITE.source].bindings.find((b) => b.name === 'REALTIME').class_name = 'Other' },
+    (f) => { f.view.settings[SITE.source].bindings.at(-1).environment = 'preview' },
+    (f) => { f.view.settings[SITE.target].bindings.push({ type: 'durable_object_namespace', name: 'FOREIGN', namespace_id: review.id, class_name: 'RealtimeHub' }) },
+    (f) => { f.view.settings[SITE.target].bindings.push({ type: 'durable_object_namespace', name: 'FOREIGN', script_name: SITE.source, class_name: 'RealtimeHub' }) },
+  ]) {
+    const f = audited(fixture(t)); change(f)
+    await assert.rejects(f.run('prepare', true), /review|Durable Object|Mailflare reference|Worker archive/i)
+    assert.equal(f.mutations.length, 0)
+  }
+})
+
+test('source archive corruption and missing independent copy block all cutover mutations', async (t) => {
+  const f = audited(fixture(t)); await f.ready()
+  const state = JSON.parse(readFileSync(f.options.state)), original = readFileSync(state.sourceArchive.path), count = f.mutations.length
+  writeFileSync(state.sourceArchive.path, 'corrupt')
+  await assert.rejects(f.run('cutover', true), /archive|backup verification/i)
+  writeFileSync(state.sourceArchive.path, original)
+  f.buckets.get(SITE.backupBucket).delete(`${state.backup.prefix}/source-worker.json`)
+  await assert.rejects(f.run('cutover', true), /backup verification|R2 object absent/i)
+  assert.equal(f.mutations.length, count)
+})
+
+test('a fresh stored object after queue drain blocks Worker and storage deletion', async (t) => {
+  const f = audited(fixture(t)); await f.cutover()
+  f.storage.intercept = ({ method, p }) => {
+    if (method === 'DELETE' && p.includes('/consumers/') && f.view.queues.filter((q) => q.consumers.length).length === 1) {
+      f.storage.pages[1].result = [{ id: 'b'.repeat(64), hasStoredData: true }]
+    }
+  }
+  const count = f.mutations.length
+  await assert.rejects(f.run('decommission', true), /Durable Object/i)
+  assert.ok(f.view.settings[SITE.source]); assert.equal(f.buckets.get(SITE.bucket).size, 2)
+  assert.ok(f.mutations.slice(count).every((c) => c.path.includes('/consumers/')))
+})
+
+test('surviving namespace blocks further retirement after successful or lost Worker response', async (t) => {
+  for (const lost of [false, true]) {
+    const f = audited(fixture(t)); await f.cutover(); f.storage.keepNamespace = true
+    if (lost) f.failAfter.add(`${A}/workers/scripts/${SITE.source}`)
+    const count = f.mutations.length
+    await assert.rejects(f.run('decommission', true), /namespace|lost response/i)
+    assert.equal(f.view.settings[SITE.source], undefined); assert.equal(f.view.queues.length, 3)
+    assert.equal(f.view.databases.length, 2); assert.equal(f.buckets.get(SITE.bucket).size, 2)
+    await assert.rejects(f.run('decommission', true), /namespace/i)
+    assert.equal(f.mutations.slice(count).filter((c) => c.path.includes('/workers/scripts/')).length, 1)
+    f.storage.namespaces = [] // A separately verified external recovery; the tool never deletes namespaces directly.
+    assert.equal((await f.run('decommission', true)).phase, 'decommissioned')
+  }
+})
+
+test('lost Worker response resumes only after both Worker and namespace absence, without repeat delete', async (t) => {
+  const f = audited(fixture(t)); await f.cutover(); f.failAfter.add(`${A}/workers/scripts/${SITE.source}`)
+  await assert.rejects(f.run('decommission', true), /lost response/)
+  assert.equal(f.storage.namespaces.length, 0)
+  assert.equal((await f.run('decommission', true)).phase, 'decommissioned')
+  const deletes = f.calls.filter((c) => c.method === 'DELETE' && c.path.includes('/workers/scripts/'))
+  assert.equal(deletes.length, 1); assert.ok(deletes[0].path.endsWith('?force=false'))
+  const index = f.calls.indexOf(deletes[0])
+  assert.ok(f.calls[index - 1].path.includes(`/namespaces/${review.id}/objects?`))
 })
