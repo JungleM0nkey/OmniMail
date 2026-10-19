@@ -13,7 +13,7 @@ export function domainTransfer({ api, site, originalDomains, listDomains }) {
     && typeof saved[0].previews_enabled === 'boolean', 'Invalid saved mail domain identity or flags.')
   const original = saved[0]
   const origin = { hostname: site.hostname, zone_id: site.zone, enabled: original.enabled, previews_enabled: original.previews_enabled }
-  const capturedOthers = originalDomains.filter((d) => d.id !== site.domain && [site.source, site.target].includes(d.service))
+  const capturedOthers = ordered(originalDomains.filter((d) => d.id !== site.domain))
   const check = (domains) => {
     requireThat(Array.isArray(domains) && domains.every((d) => typeof d?.id === 'string')
       && new Set(domains.map((d) => d.id)).size === domains.length, 'Incomplete custom domain inventory.')
@@ -22,7 +22,7 @@ export function domainTransfer({ api, site, originalDomains, listDomains }) {
       && [site.source, site.target].includes(current.service), 'Mail domain identity/ownership changed.')
     requireThat(current.enabled === original.enabled && current.previews_enabled === original.previews_enabled
       && (current.environment ?? '') === (original.environment ?? ''), 'Mail domain routing flags/environment changed.')
-    requireThat(capturedOthers.every((old) => domains.some((d) => same(stable(d), stable(old)))), 'Captured unrelated custom domain changed or disappeared.')
+    requireThat(same(ordered(domains.filter((d) => d.id !== site.domain)), capturedOthers), 'Captured unrelated custom domains changed since preparation.')
     return current
   }
   const done = (domains, worker) => {
@@ -48,7 +48,5 @@ export function domainTransfer({ api, site, originalDomains, listDomains }) {
     } })
     const after = await listDomains()
     requireThat(done(after, worker), 'Domain transfer did not reach its expected owner.')
-    requireThat(same(ordered(before.filter((d) => d.id !== site.domain)), ordered(after.filter((d) => d.id !== site.domain))),
-      'Unrelated custom domains changed during transfer.')
   } }
 }

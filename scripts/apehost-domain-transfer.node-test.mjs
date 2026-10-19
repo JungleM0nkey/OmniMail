@@ -124,6 +124,19 @@ test('post-transfer owner, flag and unrelated-domain failures never mark the int
     assert.equal(f.state.started[`${SITE.target}-domain`], true)
     assert.equal(f.state.completed[`${SITE.target}-domain`], undefined)
     assert.equal(f.calls.filter((c) => c.method === 'PUT').length, 1)
+    await assert.rejects(f.run(SITE.target), /ownership|identity|flags|unrelated|Unrelated/)
+    assert.equal(f.state.completed[`${SITE.target}-domain`], undefined)
+    assert.equal(f.calls.filter((c) => c.method === 'PUT').length, 1)
+  }
+})
+
+test('domains added after preparation refuse before preview and cannot establish an unrecorded retry baseline', async () => {
+  for (const service of [SITE.source, SITE.target, 'foreign-worker']) {
+    const f = fixture()
+    f.domains.push({ ...domain, id: 'added-after-prepare', hostname: 'new.apehost.dev', service })
+    await assert.rejects(f.run(SITE.target), /unrelated/)
+    assert.equal(f.calls.filter((c) => c.method !== 'GET').length, 0)
+    assert.equal(f.state.completed[`${SITE.target}-domain`], undefined)
   }
 })
 

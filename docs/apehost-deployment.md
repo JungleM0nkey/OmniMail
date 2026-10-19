@@ -229,6 +229,11 @@ additions, removals, conflicts or other affected zones. Publication uses
 `override_existing_dns_record:false` with only that origin. Other custom domains
 remain in place and their routing fields are checked after publication. Preview
 certificate/environment placeholders are excluded from ownership comparisons.
+All other domains' stable routing fields must match the saved preparation during
+initial execution and every retry. Added, removed or changed unrelated domains
+require reviewed fresh preparation/backups before transfer; certificate renewal
+does not change this routing invariant. Do not edit or silently refresh existing
+state to accept domain drift.
 
 Ownership and routing flags are rechecked immediately after preview and before
 publication. This endpoint exposes no conditional owner update, so these checks
