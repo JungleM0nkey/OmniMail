@@ -74,7 +74,8 @@ function fixture(t) {
     const url = new URL(`https://api.cloudflare.com${path}`), p = url.pathname
     const override = await storage.intercept?.({ method, path, p, url, opts })
     if (override !== undefined) return override
-    const isRead = method === 'GET' || method === 'POST' && p.endsWith('/query') && (opts.body.sql?.startsWith('SELECT ') || opts.body.batch?.every((q) => q.sql.startsWith('SELECT ')))
+    const isRead = method === 'GET' || method === 'POST' && (p.endsWith('/domains/changeset')
+      || p.endsWith('/query') && (opts.body.sql?.startsWith('SELECT ') || opts.body.batch?.every((q) => q.sql.startsWith('SELECT '))))
     if (!isRead) mutations.push({ method, path, body: opts.body })
     let result
     if (method === 'GET') {
@@ -121,6 +122,10 @@ function fixture(t) {
       } else if (method === 'GET') return envelope([...buckets.get(bucket)].map(([key, bytes]) => ({ key, size: bytes.length, etag: sha256(bytes) })), { is_truncated: false })
       else if (method === 'DELETE') { assert.equal(buckets.get(bucket).size, 0); buckets.delete(bucket); view.buckets = view.buckets.filter((b) => b.name !== bucket) }
       result = envelope({})
+    } else if (method === 'POST' && p.endsWith('/domains/changeset')) {
+      assert.equal(url.searchParams.get('replace_state'), 'false')
+      return envelope({ added: [], removed: [], conflicting: [], affected_zones: [SITE.zone],
+        updated: [{ ...view.domains.find((d) => d.hostname === opts.body[0].hostname), ...opts.body[0], service: p.split('/')[5], modified: true }] })
     } else if (method === 'POST' && p.endsWith('/query')) {
       if (opts.body.batch) return envelope((await Promise.all(opts.body.batch.map(({ sql }) => api('POST', path, { body: { sql } })))).flatMap((r) => r.result))
       const sql = opts.body.sql
@@ -129,7 +134,10 @@ function fixture(t) {
       const name = sql.match(/FROM "([^"]+)"/)[1]
       return envelope([{ success: true, results: sql.includes('COUNT(*)') ? [{ n: tables[name].length }] : tables[name] }])
     } else if (method === 'PUT' && p === `${A}/workers/domains`) {
-      Object.assign(view.domains.find((d) => d.hostname === opts.body.hostname), opts.body); result = envelope({})
+      throw new Error('HTTP 409 code 100116: account domain attach cannot transfer an existing hostname')
+    } else if (method === 'PUT' && p.endsWith('/domains/records')) {
+      assert.deepEqual([opts.body.override_scope, opts.body.override_existing_origin, opts.body.override_existing_dns_record], [false, true, false])
+      Object.assign(view.domains.find((d) => d.hostname === opts.body.origins[0].hostname), opts.body.origins[0], { service: p.split('/')[5] }); result = envelope({})
     } else if (method === 'PUT' && p.startsWith(`${Z}/workers/routes/`)) {
       Object.assign(view.routes.find((r) => r.id === p.split('/').at(-1)), opts.body); result = envelope({})
     } else if (method === 'PUT' && p.endsWith('/catch_all')) { Object.assign(view.catchAll, copy(opts.body)); result = envelope({})
@@ -245,7 +253,7 @@ test('target data, object and deployment drift refuse retirement while rollback 
 })
 
 test('cutover resumes a lost response and rollback preserves both storage sets', async (t) => {
-  const f = fixture(t); await f.ready(); f.failAfter.add(`${A}/workers/domains`)
+  const f = fixture(t); await f.ready(); f.failAfter.add(`${A}/workers/scripts/${SITE.target}/domains/records`)
   await assert.rejects(f.run('cutover', true), /lost response/)
   await f.run('cutover', true); const count = f.mutations.length
   await f.run('cutover', true); assert.equal(f.mutations.length, count)
