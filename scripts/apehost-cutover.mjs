@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { REALTIME_REVIEW, namespaceCatalog, checkSourceStorage, emptyNamespace, prepareSourceArchive, sourceArchiveBytes } from './apehost-source-storage.mjs'
+import { domainTransfer } from './apehost-domain-transfer.mjs'
 
 export const SITE = Object.freeze({
   account: '7031244e5dbce80f897a55df4b7c859b', zone: 'e2c7c4a817c98ffccf4b3e964bd9aa13',
@@ -503,8 +504,8 @@ export async function runCutover(command, options, { api, now = () => new Date()
       if (command === 'cutover') { await targetUnchanged(api, parity, state); await baselineSource(api, snapshot) }
       const worker = command === 'cutover' ? SITE.target : SITE.source
       const alreadyCutover = state.phase === 'cutover'
-      const oldDomain = state.original.domains.find((d) => d.hostname === SITE.hostname)
-      await doStep(`${command}-domain`, () => api('PUT', `${A}/workers/domains`, { body: { hostname: SITE.hostname, zone_id: SITE.zone, service: worker, enabled: oldDomain.enabled, previews_enabled: oldDomain.previews_enabled } }), async () => (await refresh()).domains.some((d) => d.hostname === SITE.hostname && d.service === worker && d.enabled !== false))
+      const transfer = domainTransfer({ api, site: SITE, originalDomains: state.original.domains, listDomains: () => list(api, `${A}/workers/domains`) })
+      await doStep(`${command}-domain`, () => transfer.apply(worker), async () => transfer.done((await refresh()).domains, worker))
       for (const route of state.original.routes.filter((r) => r.script === SITE.source)) {
         const current = view.routes.find((r) => r.id === route.id)
         requireThat(current?.pattern === route.pattern && [SITE.source, SITE.target].includes(current.script), 'Saved route identity changed.')

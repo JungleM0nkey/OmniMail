@@ -218,6 +218,27 @@ not establish that later Mailflare arrivals have already reached OmniMail.
 rtk node scripts/apehost-cutover.mjs cutover --state D:/private-mail/cutover-state.json --snapshot D:/private-mail/latest.json --parity-receipt D:/private-mail/parity.json --runtime-receipt D:/private-mail/runtime.json
 ```
 
+Cutover and rollback transfer the existing custom domain through Wrangler's
+worker-scoped `/workers/scripts/{worker}/domains/records` endpoint. The
+account-level `/workers/domains` PUT attaches domains and returns 409 for this
+existing hostname; it cannot perform the transfer. Execution first requests a
+read-only changeset with `replace_state=false`, requiring exactly the saved domain
+ID/zone/hostname, destination Worker and original enabled/preview flags, with no
+additions, removals, conflicts or other affected zones. Publication uses
+`override_scope:false`, `override_existing_origin:true` and
+`override_existing_dns_record:false` with only that origin. Other custom domains
+remain in place and their routing fields are checked after publication. Preview
+certificate/environment placeholders are excluded from ownership comparisons.
+
+Ownership and routing flags are rechecked immediately after preview and before
+publication. This endpoint exposes no conditional owner update, so these checks
+cannot exclude an external writer changing the domain between the last read and
+PUT. Keep other domain writers quiescent during the transfer. A saved domain-step
+intent, including one left by the old 409 failure, resumes without clearing state.
+After a lost response, exact owner/ID/flags and captured sibling domains must match
+before the step is marked complete. Default dry runs validate current domain
+identity/flags and plan the step; the fresh preview runs inside execution.
+
 Review the dry-run plan, then repeat the same command with `--execute`. Cutover
 transfers the existing `mail.apehost.dev` custom domain and captured mail routes,
 then updates only the saved catch-all action. It retains the original catch-all
@@ -323,7 +344,7 @@ revision again before activation so concurrent releases remain present.
 
 Cutover-tool checks are separate from application acceptance:
 
-- `rtk node --test scripts/apehost-cutover.node-test.mjs scripts/apehost-email-rules.node-test.mjs scripts/apehost-baseline.node-test.mjs`
+- `rtk node --test scripts/apehost-cutover.node-test.mjs scripts/apehost-email-rules.node-test.mjs scripts/apehost-baseline.node-test.mjs scripts/apehost-domain-transfer.node-test.mjs`
   covers dry runs, destructive
   refusal, receipt mismatches, source freshness, local/remote backup corruption,
   queue ownership/backlog, exact deletion scope, rollback and interrupted resume.
@@ -335,6 +356,9 @@ Cutover-tool checks are separate from application acceptance:
   Baseline regressions cover full schema/table coverage, live source growth
   before/during backup, unchanged imported mail/attachments/objects, captured
   artifact identity, reversible rollback and strict final-delta refusal.
+  Domain regressions cover the real 409 attach contract, bidirectional transfer,
+  unrelated domains, exact flags, preview conflicts, observable ownership races,
+  failed/lost responses, resumed intents and dry runs.
 - `rtk node scripts/check-file-lines.mjs` checks repository file size limits.
 - No mocked test establishes live delivery or Browser Harness acceptance.
 
