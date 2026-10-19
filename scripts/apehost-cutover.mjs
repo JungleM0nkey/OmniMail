@@ -80,6 +80,7 @@ export function readSnapshot(path) {
   requireThat(data.account === SITE.account && data.database === SITE.database && data.bucket === SITE.bucket, 'Snapshot source identity mismatch.')
   requireThat(Number.isFinite(Date.parse(data.createdAt)) && data.tables && Array.isArray(data.objects), 'Invalid snapshot.')
   for (const name of ['messages', 'message_attachments', 'mailboxes', 'domains']) requireThat(Array.isArray(data.tables[name]), `Snapshot lacks ${name}.`)
+  capturedDatabase(data)
   requireThat(new Set(data.objects.map((o) => o.key)).size === data.objects.length, 'Duplicate snapshot object keys.')
   for (const object of data.objects) {
     objectPath(SITE.bucket, object.key)
@@ -327,8 +328,42 @@ async function targetUnchanged(api, parity, state) {
     requireThat(current?.id === parity.target.deployment.id && same(current.versions?.map(({ version_id, percentage }) => ({ id: version_id, percentage })), parity.target.deployment.versions), 'Target deployment changed after parity verification.')
   }
 }
+const sourceSchema = (api) => query(api, "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' ORDER BY type, name")
+function capturedDatabase(snapshot) {
+  const schema = snapshot.schema
+  requireThat(Array.isArray(schema) && schema.length > 0 && schema.every((s) => s && same(Object.keys(s).sort(), ['name', 'sql', 'tbl_name', 'type'])
+    && ['table', 'index', 'trigger', 'view'].includes(s.type) && typeof s.name === 'string' && s.name && typeof s.tbl_name === 'string' && s.tbl_name
+    && (s.sql === null || typeof s.sql === 'string')) && new Set(schema.map((s) => `${s.type}:${s.name}`)).size === schema.length, 'Complete captured D1 schema (type/name/tbl_name/sql) is required.')
+  const names = schema.filter((s) => s.type === 'table').map((s) => s.name)
+  requireThat(names.every((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) && same([...names].sort(), Object.keys(snapshot.tables).sort())
+    && Object.values(snapshot.tables).every((values) => Array.isArray(values) && values.length <= 10_000 && values.every((r) => r && typeof r === 'object' && !Array.isArray(r))), 'Incomplete captured D1 table coverage or rows.')
+  return { schema, tables: Object.fromEntries(Object.entries(snapshot.tables).map(([k, v]) => [k, rows(v)])) }
+}
+async function baselineSource(api, snapshot) {
+  const db = capturedDatabase(snapshot.data)
+  requireThat(same(db.schema, await sourceSchema(api)), 'Source schema changed or captured full schema is incomplete.')
+  const names = ['messages', 'message_attachments', 'mailboxes', 'domains']
+  const verifyRows = async () => {
+    const data = await query(api, names.map((name) => `SELECT * FROM "${name}" LIMIT 10001`))
+    for (const [index, name] of names.entries()) {
+      const current = new Map(data[index].map((r) => [r.id, r]))
+      requireThat(data[index].length <= 10_000 && current.size === data[index].length && data[index].every((r) => typeof r.id === 'string'), 'Incomplete baseline D1 observation.')
+      for (const old of snapshot.data.tables[name]) requireThat(typeof old.id === 'string' && same(current.get(old.id), old), `Source ${name} changed since snapshot; refresh/import/verify again.`)
+    }
+    const ids = new Set(snapshot.data.tables.messages.map((m) => m.id))
+    requireThat(same(rows(data[1].filter((a) => ids.has(a.message_id))), rows(snapshot.data.tables.message_attachments)), 'Baseline attachment membership changed since snapshot.')
+  }
+  await verifyRows()
+  const objects = await list(api, `${A}/r2/buckets/${SITE.bucket}/objects`), present = new Map(objects.map((o) => [o.key, o]))
+  requireThat(present.size === objects.length, 'Duplicate source R2 inventory keys.')
+  for (const old of snapshot.data.objects) requireThat(present.get(old.key)?.size === old.size
+    && sha256(await api('GET', objectPath(SITE.bucket, old.key), { binary: true })) === old.sha256, 'Source R2 bytes changed or disappeared since snapshot.')
+  await verifyRows()
+  requireThat(same(db.schema, await sourceSchema(api)), 'Source schema changed during baseline verification.')
+  return db
+}
 async function sourceDatabase(api) {
-  const schema = await query(api, "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' ORDER BY type, name")
+  const schema = await sourceSchema(api)
   const tables = {}, names = schema.filter((t) => t.type === 'table').map((t) => t.name)
   requireThat(names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)), 'Unsupported source table name.')
   for (let offset = 0; offset < names.length; offset += 10) {
@@ -425,9 +460,7 @@ export async function runCutover(command, options, { api, now = () => new Date()
     const refresh = async () => { view = await inventory(api); return view }
     if (command === 'backup') {
       requireThat(!['decommissioning', 'decommissioned'].includes(state.phase), 'Cannot replace backup during or after deletion.')
-      const previous = state.backup; delete state.backup
-      let db
-      try { db = await freshSource(api, snapshot, state) } finally { state.backup = previous }
+      const db = await baselineSource(api, snapshot)
       await targetUnchanged(api, parity, state)
       const artifacts = { 'snapshot.json': snapshot.bytes, 'source-d1.json': Buffer.from(canonical(db)), 'control-plane.json': Buffer.from(canonical(state.original)), 'parity.json': parityBytes }
       if (sourceArchive) { await emptyNamespace(api); artifacts['source-worker.json'] = sourceArchive }
@@ -446,18 +479,19 @@ export async function runCutover(command, options, { api, now = () => new Date()
         plans.push(`verify-backup:${name}`)
       }
       if (execute) {
-        requireThat(same(db, await freshSource(api, snapshot, { ...state, backup: undefined })), 'Source D1 changed while copying the backup.')
-        state.backup = { snapshotSha256: snapshot.hash, databaseSha256: sha256(artifacts['source-d1.json']), paritySha256: sha256(parityBytes), directory, prefix, verifiedAt: now(), artifacts: Object.fromEntries(Object.entries(artifacts).map(([name, bytes]) => [name, sha256(bytes)])) }
+        await baselineSource(api, snapshot)
+        state.backup = { kind: 'captured-d1/v1', capturedAt: snapshot.data.createdAt, snapshotSha256: snapshot.hash, databaseSha256: sha256(artifacts['source-d1.json']), paritySha256: sha256(parityBytes), directory, prefix, verifiedAt: now(), artifacts: Object.fromEntries(Object.entries(artifacts).map(([name, bytes]) => [name, sha256(bytes)])) }
         saveState()
       }
-      return { command, execute, plans, snapshotSha256: snapshot.hash }
+      return { command, execute, plans, kind: 'captured-d1/v1', capturedAt: snapshot.data.createdAt, snapshotSha256: snapshot.hash }
     }
-    requireThat(state.backup?.snapshotSha256 === snapshot.hash && state.backup.paritySha256 === sha256(parityBytes)
+    requireThat(state.backup?.kind === 'captured-d1/v1' && state.backup.capturedAt === snapshot.data.createdAt && state.backup.snapshotSha256 === snapshot.hash && state.backup.paritySha256 === sha256(parityBytes)
       && state.backup.prefix === `mailflare-retirement/${snapshot.hash}/${sha256(parityBytes)}`
       && state.backup.directory === join(dirname(statePath), `mailflare-backup-${snapshot.hash}`, sha256(parityBytes))
       && same(Object.keys(state.backup.artifacts ?? {}).sort(), ['control-plane.json', 'parity.json', 'snapshot.json', 'source-d1.json', ...(sourceArchive ? ['source-worker.json'] : [])].sort())
       && state.backup.artifacts['snapshot.json'] === snapshot.hash && state.backup.artifacts['parity.json'] === sha256(parityBytes)
       && state.backup.artifacts['source-d1.json'] === state.backup.databaseSha256
+      && state.backup.databaseSha256 === sha256(Buffer.from(canonical(capturedDatabase(snapshot.data))))
       && state.backup.artifacts['control-plane.json'] === sha256(Buffer.from(canonical(state.original)))
       && (!sourceArchive || state.backup.artifacts['source-worker.json'] === sha256(sourceArchive)), 'Latest verified snapshot/receipt must be backed up first.')
     for (const [name, hash] of Object.entries(state.backup.artifacts)) {
@@ -466,7 +500,7 @@ export async function runCutover(command, options, { api, now = () => new Date()
     }
     if (command === 'cutover' || command === 'rollback') {
       requireThat(!['decommissioning', 'decommissioned'].includes(state.phase), 'Storage retirement started; automatic rollback/cutover is unavailable.')
-      if (command === 'cutover') { await targetUnchanged(api, parity, state); await freshSource(api, snapshot, state) }
+      if (command === 'cutover') { await targetUnchanged(api, parity, state); await baselineSource(api, snapshot) }
       const worker = command === 'cutover' ? SITE.target : SITE.source
       const alreadyCutover = state.phase === 'cutover'
       const oldDomain = state.original.domains.find((d) => d.hostname === SITE.hostname)
