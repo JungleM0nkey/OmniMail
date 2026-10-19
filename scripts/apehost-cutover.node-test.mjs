@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { SITE, sha256, readSnapshot, validateReceipts, objectPath, list, step, runCutover, oauthApi } from './apehost-cutover.mjs'
+import { SITE, sha256, readSnapshot, validateReceipts, objectPath, runCutover, oauthApi } from './apehost-cutover.mjs'
 
 const A = `/accounts/${SITE.account}`, Z = `/zones/${SITE.zone}`
 const targetDb = 'c9f2d452-6059-406c-9101-861db1819448'
@@ -18,8 +18,9 @@ function fixture(t) {
   t.after(() => { assert.ok(directory.startsWith(`${scratch}\\`) || directory.startsWith(`${scratch}/`)); rmSync(directory, { recursive: true, force: true }) })
   const object = (key, text) => ({ key, size: Buffer.byteLength(text), sha256: sha256(text), base64: Buffer.from(text).toString('base64') })
   const data = { createdAt: '2026-10-18T18:00:00.000Z', account: SITE.account, database: SITE.database, bucket: SITE.bucket,
-    tables: { messages: [{ id: 'message-1', subject: 'private' }], message_attachments: [{ id: 'att-1' }], mailboxes: [{ id: 'owner' }], domains: [{ name: 'apehost.dev' }] },
+    tables: { messages: [{ id: 'message-1', subject: 'private' }], message_attachments: [{ id: 'att-1', message_id: 'message-1' }], mailboxes: [{ id: 'owner' }], domains: [{ id: 'domain-1', name: 'apehost.dev' }], api_keys: [{ id: 'must-also-back-up' }], contacts: [{ id: 'contact-1', seen: 1 }] },
     objects: [object('raw/msg 1.eml', 'Subject: private\r\n\r\nhello'), object('attachments/att-1', 'attachment')] }
+  data.schema = Object.keys(data.tables).sort().map((name) => ({ type: 'table', name, tbl_name: name, sql: `CREATE TABLE ${name} (...)` }))
   const snapshotPath = join(directory, 'snapshot.json'); json(snapshotPath, data)
   const snapshot = readSnapshot(snapshotPath)
   const requiredChecks = ['snapshot-integrity', 'source-mapping', 'worker-bindings', 'framing-policy', 'anonymous-access-denied',
@@ -36,7 +37,7 @@ function fixture(t) {
     checks: Object.fromEntries(['stageLogin', 'privateInbox', 'attachments', 'nativeSend', 'framing', 'finalLogin', 'finalInbound', 'finalSend', 'sourceQueuesQuiesced'].map((k) => [k, true])), evidence: { harness: 'independent-session' } }
   const options = { state: join(directory, 'state.json'), snapshot: snapshotPath, 'parity-receipt': join(directory, 'parity.json'), 'runtime-receipt': join(directory, 'runtime.json') }
   json(options['parity-receipt'], parity); json(options['runtime-receipt'], runtime)
-  const tables = copy({ ...data.tables, api_keys: [{ id: 'must-also-back-up' }] })
+  const tables = copy(data.tables), schema = copy(data.schema)
   const targetTables = { messages: [{ id: 'mfl_1', subject: 'private' }], attachments: [{ id: 'mfl_a_1', message_id: 'mfl_1' }],
     message_search: [{ content: 'private', message_id: 'mfl_1' }], settings: [{ key: `mailflare_import:${SITE.database}:message-1`, value: 'archived metadata' }] }
   const targetObjects = [...data.objects.map((o, i) => ({ ...o, key: `target/objects/${i}` })), object('target/bodies/one.json', '{"text":"hello"}')]
@@ -124,7 +125,7 @@ function fixture(t) {
       if (opts.body.batch) return envelope((await Promise.all(opts.body.batch.map(({ sql }) => api('POST', path, { body: { sql } })))).flatMap((r) => r.result))
       const sql = opts.body.sql
       if (p === `${A}/d1/database/${targetDb}/query`) return envelope([{ success: true, results: targetTables[sql.match(/^SELECT \* FROM ([a-z_]+)/)[1]] }])
-      if (sql.includes('sqlite_master')) return envelope([{ success: true, results: Object.keys(tables).map((name) => ({ type: 'table', name, tbl_name: name, sql: `CREATE TABLE ${name} (...)` })) }])
+      if (sql.includes('sqlite_master')) return envelope([{ success: true, results: schema }])
       const name = sql.match(/FROM "([^"]+)"/)[1]
       return envelope([{ success: true, results: sql.includes('COUNT(*)') ? [{ n: tables[name].length }] : tables[name] }])
     } else if (method === 'PUT' && p === `${A}/workers/domains`) {
@@ -150,7 +151,7 @@ function fixture(t) {
   const run = (command, execute = false) => runCutover(command, { ...options, execute }, { api, now: () => '2026-10-18T20:00:00.000Z' })
   const ready = async () => { await run('prepare', true); await run('backup', true) }
   const cutover = async () => { await ready(); await run('cutover', true) }
-  return { api, run, ready, cutover, view, tables, targetTables, buckets, calls, mutations, metrics, failAfter, options, data, snapshot, parity, runtime, storage }
+  return { api, run, ready, cutover, view, tables, schema, targetTables, buckets, calls, mutations, metrics, failAfter, options, data, snapshot, parity, runtime, storage }
 }
 
 const review = { id: '702f544aa78e480db6bb37f2aac86380', etag: '203f2efecc8d108bb8e7ea28c81068b06725d5f539dccd02c37e86f56194bd3c' }
@@ -199,13 +200,13 @@ test('all default dry runs preserve resources and write no Cloudflare changes', 
   assert.equal(f.mutations.length, count); assert.ok(f.view.settings[SITE.source]); assert.equal(f.buckets.get(SITE.bucket).size, 2)
 })
 
-test('source changes and incomplete backups prevent any cutover mutation', async (t) => {
+test('baseline row and object changes prevent any reversible cutover mutation', async (t) => {
   const f = fixture(t); await f.ready(); let count = f.mutations.length
-  f.tables.messages.push({ id: 'new-message' })
+  f.tables.messages[0].subject = 'modified'
   await assert.rejects(f.run('cutover', true), /changed since snapshot/); assert.equal(f.mutations.length, count)
-  f.tables.messages.pop(); f.tables.api_keys.push({ id: 'new-key' })
-  await assert.rejects(f.run('cutover', true), /D1 changed/); assert.equal(f.mutations.length, count)
-  f.tables.api_keys.pop(); f.buckets.get(SITE.bucket).set('raw/msg 1.eml', Buffer.from('edited'))
+  f.tables.messages[0].subject = 'private'; f.tables.message_attachments[0].filename = 'modified'
+  await assert.rejects(f.run('cutover', true), /changed since snapshot/); assert.equal(f.mutations.length, count)
+  delete f.tables.message_attachments[0].filename; f.buckets.get(SITE.bucket).set('raw/msg 1.eml', Buffer.from('edited'))
   await assert.rejects(f.run('cutover', true), /R2 bytes/); assert.equal(f.mutations.length, count)
 })
 
@@ -316,64 +317,6 @@ test('repeating a completed cutover retains the original acceptance timestamp', 
   const before = JSON.parse(readFileSync(f.options.state)).cutoverAt
   await runCutover('cutover', { ...f.options, execute: true }, { api: f.api, now: () => '2026-10-18T20:05:00.000Z' })
   assert.equal(JSON.parse(readFileSync(f.options.state)).cutoverAt, before)
-})
-
-test('pagination consumes cursors and refuses loops/truncation', async () => {
-  const calls = []
-  const api = async (_m, path) => { calls.push(path); return path.includes('cursor=next') ? { result: [{ key: 'b' }], result_info: { is_truncated: false } } : { result: [{ key: 'a' }], result_info: { cursor: 'next', is_truncated: true } } }
-  assert.equal((await list(api, `${A}/r2/buckets/${SITE.bucket}/objects`)).length, 2); assert.equal(calls.length, 2)
-  await assert.rejects(list(async () => ({ result: [], result_info: { is_truncated: true } }), '/objects'), /no cursor/)
-  await assert.rejects(list(async () => ({ result: [], result_info: { is_truncated: true, cursor: 'repeat' } }), '/objects'), /Repeated/)
-})
-
-test('ruleset inventory obeys its 50-item limit and follows after cursors', async () => {
-  const calls = []
-  const api = async (method, path) => {
-    const url = new URL(`https://api.cloudflare.com${path}`)
-    if (Number(url.searchParams.get('per_page')) > 50) throw new Error('HTTP 400: per_page cannot be greater than 50')
-    assert.equal(method, 'GET'); assert.equal(url.pathname, `${Z}/rulesets`)
-    assert.equal(url.searchParams.get('per_page'), '50'); assert.equal(url.searchParams.has('page'), false)
-    calls.push(url.searchParams.get('cursor'))
-    return url.searchParams.get('cursor') === 'next+/='
-      ? { result: [{ id: 'last-rule' }], result_info: { cursors: { after: '' } } }
-      : { result: Array.from({ length: 50 }, (_, i) => ({ id: `rule-${i}` })), result_info: { cursors: { after: 'next+/=' } } }
-  }
-  const result = await list(api, `${Z}/rulesets`)
-  assert.equal(result.length, 51); assert.equal(result.at(-1).id, 'last-rule')
-  assert.deepEqual(calls, [null, 'next+/='])
-})
-
-test('ruleset pagination honors short pages and refuses repeated after cursors', async () => {
-  const api = async (_method, path) => new URL(`https://api.cloudflare.com${path}`).searchParams.has('cursor')
-    ? { result: [{ id: 'second' }], result_info: { cursors: {} } }
-    : { result: [{ id: 'first' }], result_info: { cursors: { after: 'next' } } }
-  assert.deepEqual(await list(api, `${Z}/rulesets`), [{ id: 'first' }, { id: 'second' }])
-  await assert.rejects(list(async () => ({ result: [], result_info: { cursors: { after: 'repeat' } } }), `${Z}/rulesets`), /Repeated/)
-})
-
-test('queue pages and R2 bucket cursors retain their existing 100-item requests', async () => {
-  const pages = []
-  const queues = await list(async (_method, path) => {
-    const query = new URL(`https://api.cloudflare.com${path}`).searchParams
-    assert.equal(query.get('per_page'), '100'); assert.equal(query.has('cursor'), false)
-    const page = Number(query.get('page')); pages.push(page)
-    return { result: [{ queue_id: `queue-${page}` }], result_info: { total_pages: 2 } }
-  }, `${A}/queues`)
-  assert.deepEqual(queues.map((q) => q.queue_id), ['queue-1', 'queue-2']); assert.deepEqual(pages, [1, 2])
-  const buckets = await list(async (_method, path) => {
-    const query = new URL(`https://api.cloudflare.com${path}`).searchParams
-    assert.equal(query.get('per_page'), '100')
-    return query.has('cursor') ? { result: { buckets: [{ name: 'last' }] }, result_info: {} }
-      : { result: { buckets: [{ name: 'first' }] }, result_info: { cursor: 'bucket-next' } }
-  }, `${A}/r2/buckets`, 'buckets')
-  assert.deepEqual(buckets.map((b) => b.name), ['first', 'last'])
-})
-
-test('step records intent before a mutation and skips an already completed operation', async () => {
-  const state = { started: {}, completed: {} }, saved = [], plans = []; let present = false, writes = 0
-  const options = { execute: true, saveState: () => saved.push(copy(state)), plans, apply: async () => { assert.equal(saved.at(-1).started.one, true); writes++; present = true }, done: async () => present }
-  await step(state, 'one', options); await step(state, 'one', options)
-  assert.equal(writes, 1); assert.equal(state.completed.one, true)
 })
 
 test('snapshot validation rejects corrupt bytes, duplicate keys and unsafe R2 paths', (t) => {
@@ -582,4 +525,65 @@ test('listed catch-all inconsistencies, unknown identities and ordinary source f
     await assert.rejects(f.run('prepare', true), /identity|listed catch-all|route\/domain/i)
     assert.equal(f.mutations.length, 0); assert.equal(existsSync(f.options.state), false)
   }
+})
+
+test('captured baseline backup and reversible cutover allow new mail and derived changes, retirement refuses delta', async (t) => {
+  const f = fixture(t); await f.run('prepare', true)
+  f.tables.messages.push({ id: 'new-message' }); f.tables.message_attachments.push({ id: 'new-attachment', message_id: 'new-message' })
+  f.tables.contacts[0].seen++; f.buckets.get(SITE.bucket).set('new/raw.eml', Buffer.from('new mail'))
+  let duringCopy = false
+  f.storage.intercept = ({ method, p }) => { if (!duringCopy && method === 'PUT' && p.includes('/r2/')) { duringCopy = true; f.tables.contacts[0].seen++ } }
+  const count = f.mutations.length; await f.run('backup'); assert.equal(f.mutations.length, count)
+  await f.run('backup', true)
+  const state = JSON.parse(readFileSync(f.options.state)), archived = JSON.parse(readFileSync(join(state.backup.directory, 'source-d1.json')))
+  assert.equal(state.backup.kind, 'captured-d1/v1'); assert.deepEqual(archived.schema, f.data.schema)
+  assert.equal(archived.tables.messages.length, 1); assert.deepEqual(archived.tables.contacts, [JSON.stringify(f.data.tables.contacts[0])])
+  f.tables.api_keys.push({ id: 'new-key' }); await f.run('cutover', true)
+  const beforeDelete = f.mutations.length
+  await assert.rejects(f.run('decommission', true), /changed since snapshot|D1 changed/)
+  assert.equal(f.mutations.length, beforeDelete); assert.ok(f.view.settings[SITE.source]); assert.equal(f.buckets.get(SITE.bucket).size, 3)
+  await f.run('rollback', true); assert.equal(f.tables.messages.length, 2); assert.equal(f.buckets.get(SITE.bucket).size, 3)
+})
+
+test('baseline deletion, attachment membership changes and full-schema drift block backup before writes', async (t) => {
+  for (const change of [
+    (f) => { f.tables.messages.pop() }, (f) => { f.tables.message_attachments.pop() },
+    (f) => { f.tables.message_attachments.push({ id: 'late-attachment', message_id: 'message-1' }) },
+    (f) => { f.schema[0].sql = 'changed schema' }, (f) => { f.buckets.get(SITE.bucket).delete('raw/msg 1.eml') },
+  ]) {
+    const f = fixture(t); await f.run('prepare', true); change(f); const count = f.mutations.length
+    await assert.rejects(f.run('backup', true), /schema|changed|disappeared|attachment|R2/i)
+    assert.equal(f.mutations.length, count); assert.equal(JSON.parse(readFileSync(f.options.state)).backup, undefined)
+  }
+})
+
+test('baseline message changes during R2 observation block reversible cutover', async (t) => {
+  const f = fixture(t); await f.ready(); const count = f.mutations.length
+  f.storage.intercept = ({ method, p }) => {
+    if (method === 'GET' && p.startsWith(`${A}/r2/buckets/${SITE.bucket}/objects/`)) f.tables.messages[0].subject = 'changed during object reads'
+  }
+  await assert.rejects(f.run('cutover', true), /changed since snapshot/)
+  assert.equal(f.mutations.length, count)
+})
+
+test('schema changing while baseline artifacts upload leaves no verified backup state', async (t) => {
+  const f = fixture(t); await f.run('prepare', true)
+  f.storage.intercept = ({ method }) => { if (method === 'PUT') f.schema[0].sql = 'changed during copy' }
+  await assert.rejects(f.run('backup', true), /schema/i)
+  assert.equal(JSON.parse(readFileSync(f.options.state)).backup, undefined)
+  assert.ok(!f.mutations.some((c) => c.path.includes('/workers/domains') || c.method === 'DELETE'))
+})
+
+test('complete schema definitions survive captured backup and exact fresh retirement still succeeds', async (t) => {
+  const f = fixture(t)
+  f.schema.push({ type: 'index', name: 'messages_idx', tbl_name: 'messages', sql: 'CREATE INDEX messages_idx ON messages(id)' },
+    { type: 'trigger', name: 'messages_trigger', tbl_name: 'messages', sql: 'CREATE TRIGGER messages_trigger ...' },
+    { type: 'view', name: 'message_view', tbl_name: 'message_view', sql: 'CREATE VIEW message_view AS SELECT * FROM messages' })
+  f.schema.sort((a, b) => `${a.type}:${a.name}`.localeCompare(`${b.type}:${b.name}`, 'en')); f.data.schema = copy(f.schema)
+  json(f.options.snapshot, f.data); const captured = readSnapshot(f.options.snapshot)
+  f.parity.snapshot.manifestSha256 = captured.hash; f.runtime.snapshot.manifestSha256 = captured.hash
+  json(f.options['parity-receipt'], f.parity); json(f.options['runtime-receipt'], f.runtime)
+  await f.cutover(); const state = JSON.parse(readFileSync(f.options.state))
+  assert.deepEqual(JSON.parse(readFileSync(join(state.backup.directory, 'source-d1.json'))).schema, f.schema)
+  assert.equal((await f.run('decommission', true)).phase, 'decommissioned')
 })

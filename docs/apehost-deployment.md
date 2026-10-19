@@ -52,7 +52,7 @@ cutover state and mailbox credentials outside this repository.
    and create the `apehost.dev` domain and `m0nkey@apehost.dev` receiving address.
    Reuse the existing mailbox password from the owner's private local credential
    file without printing or committing it. Remove `SETUP_TOKEN` after setup.
-4. Refresh the Mailflare snapshot, import all existing mail/attachments, and run
+4. Capture a stable, complete Mailflare baseline snapshot, import its mail/attachments, and run
    the independent verifier against the exact snapshot bytes. Verify owner login,
    private inbox and attachments, native sending, and console framing through the
    Browser Harness. Record separate parity and runtime receipts described below.
@@ -63,9 +63,10 @@ cutover state and mailbox credentials outside this repository.
    onboarding stay in place. Verify real login, sending, inbound delivery and
    attachments through `mail.apehost.dev`, including a message received after
    the catch-all change.
-6. Drain and quiesce Mailflare queues without purging. Refresh/import/verify the
-   source snapshot again if any source row or object changed. Back up that exact
-   latest snapshot. Update runtime evidence after final acceptance and only then
+6. After reversible routing cutover, drain and quiesce Mailflare producers and
+   queues without purging. Capture the final source state, import its delta and
+   independently verify it again. Back up that exact latest complete snapshot.
+   Update runtime evidence after final acceptance and only then
    run guarded decommission. Remove the temporary OmniMail staging hostname
    separately after final acceptance; it is not a Mailflare resource.
 
@@ -160,12 +161,31 @@ empty-object proof justify this one exception; they do not authorize discarding
 storage from any other Durable Object.
 
 The migration snapshot is a JSON object with `createdAt`, `account`, `database`,
-`bucket`, `tables` containing table-row arrays, and `objects` containing
-`{key,size,sha256,base64}`. Include all source tables and schema in the final
-snapshot. The tool independently compares every supplied table with current D1
-rows, checks the entire R2 key set and SHA-256 of every source object, and also
-exports all non-internal source D1 tables/schema. A table exceeding 10,000 rows
-causes a refusal rather than a partial backup.
+`bucket`, `schema`, `tables` containing table-row arrays, and `objects` containing
+`{key,size,sha256,base64}`. Capture a stable complete source state before import;
+the snapshot file's exact bytes are bound to the independent verifier receipt.
+`schema` must contain the full result of:
+
+```sql
+SELECT type, name, tbl_name, sql FROM sqlite_master
+WHERE name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
+ORDER BY type, name
+```
+
+Every entry has exactly `{type,name,tbl_name,sql}`, including indexes, triggers
+and views. `tables` must contain exactly every schema entry of type `table`,
+including FTS shadow tables. Missing/partial schema, omitted/extra table keys,
+invalid row arrays and tables exceeding 10,000 rows cause refusal. Historical
+snapshots with only table names/DDL do not meet this complete-backup contract.
+
+During backup and reversible cutover, the tool checks that the full captured
+schema still matches current D1. Every baseline message, attachment, mailbox and
+domain row must remain unchanged and present on reads before and after checking
+R2, and existing baseline messages cannot gain attachments. Every baseline R2
+object must remain present with the same bytes. New messages/objects and changes
+to derived tables such as contacts,
+FTS, JMAP and spam reputation are allowed while Mailflare continues receiving.
+All source resources remain available for rollback and the final delta import.
 
 ```powershell
 rtk node scripts/apehost-cutover.mjs backup --state D:/private-mail/cutover-state.json --snapshot D:/private-mail/latest.json --parity-receipt D:/private-mail/parity.json
@@ -175,7 +195,7 @@ rtk node scripts/apehost-cutover.mjs backup --state D:/private-mail/cutover-stat
 Backup preserves four artifacts locally and in the independent
 `omni-mail-backups` bucket under
 `mailflare-retirement/<snapshot-sha256>/<parity-receipt-sha256>/`:
-the exact migration snapshot, full source D1 export, original control-plane
+the exact migration snapshot, captured complete D1 schema/rows, original control-plane
 inventory and exact parity receipt. It downloads every uploaded artifact and
 checks SHA-256 independently. Existing keys containing different bytes cause a
 refusal. Cutover, rollback and decommission recheck both backup locations.
@@ -184,6 +204,15 @@ exact original Worker archive in both locations, with the same download/hash
 checks. A missing or corrupted primary archive or backup copy stops progress.
 Renewed verifier receipts for the same source snapshot get a separate immutable
 namespace; earlier proof artifacts remain intact.
+
+The D1 artifact is a canonical representation of the supplied snapshot's
+schema/rows, labelled `captured-d1/v1` in state and command output. Its capture
+time comes from the snapshot; backup verification time records when the copies
+were checked. It is a point-in-time baseline, not a fresh export of unverified
+arrivals during upload. Both backup locations are checked against that captured
+artifact. Existing backups are never silently relabelled; use a complete snapshot
+and new independently verified receipt. Baseline parity and routing cutover do
+not establish that later Mailflare arrivals have already reached OmniMail.
 
 ```powershell
 rtk node scripts/apehost-cutover.mjs cutover --state D:/private-mail/cutover-state.json --snapshot D:/private-mail/latest.json --parity-receipt D:/private-mail/parity.json --runtime-receipt D:/private-mail/runtime.json
@@ -206,6 +235,14 @@ in-flight work and retries have quiesced. No queue is purged.
 
 Decommission removes source queue consumers, then the exact Mailflare Worker
 with `force=false`, then queues only after consumers/producers are absent.
+Decommission requires exact current-source equality with the final snapshot:
+every captured D1 table, the full D1 schema/row hash, the complete R2 inventory
+and object bytes must match, with stable repeated reads. Unimported arrivals or
+any derived-table change stop retirement before deletion. These strict checks
+remain at the original retirement boundaries, together with independent target
+parity, target drift detection, both verified backups and final runtime/queue
+acceptance. Refresh/import/verify/back up the final delta after source quiescence.
+
 Immediately before Worker deletion it rechecks complete ownership and all Hub
 object cursors with `hasStoredData: false`. Both the Worker and its namespace
 must then be absent before any queue, R2 or D1 retirement continues. A surviving
@@ -286,7 +323,7 @@ revision again before activation so concurrent releases remain present.
 
 Cutover-tool checks are separate from application acceptance:
 
-- `rtk node --test scripts/apehost-cutover.node-test.mjs scripts/apehost-email-rules.node-test.mjs`
+- `rtk node --test scripts/apehost-cutover.node-test.mjs scripts/apehost-email-rules.node-test.mjs scripts/apehost-baseline.node-test.mjs`
   covers dry runs, destructive
   refusal, receipt mismatches, source freshness, local/remote backup corruption,
   queue ownership/backlog, exact deletion scope, rollback and interrupted resume.
@@ -295,6 +332,9 @@ Cutover-tool checks are separate from application acceptance:
   absence after interrupted deletion, and sanitized malformed private JSON.
   Routing regressions cover the duplicate catch-all contract, identity/body
   mismatches, ordinary forwarding rules and 50-item page/count completion.
+  Baseline regressions cover full schema/table coverage, live source growth
+  before/during backup, unchanged imported mail/attachments/objects, captured
+  artifact identity, reversible rollback and strict final-delta refusal.
 - `rtk node scripts/check-file-lines.mjs` checks repository file size limits.
 - No mocked test establishes live delivery or Browser Harness acceptance.
 
