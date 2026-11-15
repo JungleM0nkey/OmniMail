@@ -105,6 +105,10 @@ export interface Env {
   APP_ORIGINS?: string
   SUPER_ADMIN_EMAIL?: string
   COOKIE_SECURE?: string
+  /** Cloudflare Access team domain, e.g. team.cloudflareaccess.com; with ACCESS_AUD enables Access sign-in. */
+  ACCESS_TEAM_DOMAIN?: string
+  /** Audience tag of the Access application that guards /api/auth/access. */
+  ACCESS_AUD?: string
   SETUP_TOKEN?: string
   RESEND_DOMAIN_CONFIGS?: string
   RESEND_WEBHOOK_SECRET?: string

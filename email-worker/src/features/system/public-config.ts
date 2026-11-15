@@ -98,6 +98,8 @@ export async function publicConfig(env: Env) {
     ),
     registrationMethod,
     linuxDoLoginEnabled,
+    // Present when sign-in goes through Cloudflare Access; the team domain is for its logout URL.
+    accessLogin: env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD ? { teamDomain: env.ACCESS_TEAM_DOMAIN } : null,
     registrationDomainPolicy: domainPolicy(settings),
     registrationProtectionReady: passwordRegistrationReady,
     turnstileSiteKey: env.TURNSTILE_SITE_KEY?.trim() || '',

@@ -262,6 +262,7 @@ Serverless Webmail：
 ### 管理与安全
 
 - 邮箱密码登录和 Worker 配置驱动的主管理员
+- 可选 Cloudflare Access 登录：Access 身份邮箱映射到 OmniMail 账户，已映射账户不再接受密码
 - 可选邮箱密码注册、Linux DO Connect 第三方注册与注册限速
 - 注册邮箱后缀允许列表 / 禁止列表
 - 短期 Access Token、轮换 Refresh Token 和设备会话
@@ -510,6 +511,8 @@ Worker 文件，剩余路径仍会匹配 `*` 并正常部署。Build watch paths
 | `TURNSTILE_SECRET_KEY` | Secret | Turnstile 私密 Secret Key |
 | `LINUX_DO_CLIENT_ID` | Text | Linux DO Connect Client ID |
 | `LINUX_DO_CLIENT_SECRET` | Secret | Linux DO Connect Client Secret |
+| `ACCESS_TEAM_DOMAIN` | Text | Cloudflare Access 团队域名，例如 `team.cloudflareaccess.com`；与 `ACCESS_AUD` 同时设置时启用 Access 登录 |
+| `ACCESS_AUD` | Text | 保护 `/api/auth/access` 的 Access 应用 Audience 标签 |
 | `RESEND_DOMAIN_CONFIGS` | Secret | 按发件域名配置独立的 Resend API Key 与可选发件人 |
 | `RESEND_WEBHOOK_SECRET` | Secret | 单个 Resend Webhook 的 Signing Secret（兼容旧配置） |
 | `RESEND_WEBHOOK_SECRETS` | Secret | 多个 Resend Webhook Signing Secret 组成的 JSON 数组 |
@@ -638,6 +641,11 @@ Builds 检测到分支更新后会自动构建、迁移并重新部署。
 将回调地址设置为 `https://你的域名/api/auth/linux-do/callback`，再配置上表两个变量。
 管理员随后可在 **系统设置 → 外部注册** 中选择“仅 Linux DO”。现有账号仍可使用
 邮箱密码登录；公开注册的新用户默认可在已启用域名中选择 1 个尚未占用的邮箱地址。
+
+若要启用 Cloudflare Access 登录，用 Access 应用保护 `/api/auth/access`，再配置上表
+`ACCESS_TEAM_DOMAIN` 与 `ACCESS_AUD`，并在 D1 `access_identities` 表中把 Access 身份邮箱
+映射到 OmniMail 用户。启用后未登录用户直接跳转到 Access，退出登录同时结束 Access 会话。
+已映射账户的密码在浏览器登录、设备令牌签发和桌面重新验证中均不再被接受。
 
 若要启用独立的 **Linux DO 邮箱** 工作区，配置统一
 `MAIL_CREDENTIALS_KEY`（兼容原 `LINUX_DO_MAIL_CREDENTIALS_KEY`）。每个 OmniMail 用户可连接一个完整的 `@linux.do`
@@ -891,6 +899,8 @@ Cloudflare Workers Builds 自动执行。
   同一套验证与限速策略，恢复码只保存摘要。
 - Access Token 短期有效，Refresh Token 轮换并仅保存摘要；刷新会继承原设备 Scope，
   OmniMail Float 令牌只允许扩展实际使用的邮箱与邮件操作。
+- Access 登录在 Worker 内校验 `Cf-Access-Jwt-Assertion` JWT 的签名、团队、Audience 与有效期，
+  未映射身份返回 403。
 - 登录、首次初始化、邮箱密码公开注册和邀请注册均有限速保护。
 - 邮箱密码公开注册和多人邀请使用 Turnstile 服务端校验；Linux DO 注册使用一次性
   OAuth state 和服务端授权码交换。

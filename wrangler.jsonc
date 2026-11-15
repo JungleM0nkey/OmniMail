@@ -11,7 +11,9 @@
   "vars": {
     "APP_NAME": "OmniMail",
     "APP_ORIGINS": "https://mail.apehost.dev",
-    "SUPER_ADMIN_EMAIL": "m0nkey@apehost.dev"
+    "SUPER_ADMIN_EMAIL": "m0nkey@apehost.dev",
+    "ACCESS_TEAM_DOMAIN": "m0nkey.cloudflareaccess.com",
+    "ACCESS_AUD": "df86119333b791018cc52c02b9f5f1e8c491f67f4305f282b38b8bcd6e4d266a"
   },
   "main": "./email-worker/src/index.ts",
   "compatibility_date": "2026-07-27",

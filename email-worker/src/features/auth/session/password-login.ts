@@ -82,10 +82,13 @@ export async function authenticatePassword(
     `SELECT id, email, display_name, password_hash, role, status,
             mailbox_limit, can_create_mailboxes, can_reply, can_translate,
             storage_quota_bytes, storage_used_bytes,
-            temporary_expires_at, deleted_at, created_at
+            temporary_expires_at, deleted_at, created_at,
+            EXISTS (SELECT 1 FROM access_identities a WHERE a.user_id = users.id) AS access_only
        FROM users WHERE email = ?`,
-  ).bind(email).first<UserRow>()
-  const passwordMatches = user
+  ).bind(email).first<UserRow & { access_only: number }>()
+  // An account linked to a Cloudflare Access identity signs in only through
+  // Access: its password is never accepted, here or by any caller.
+  const passwordMatches = user && !user.access_only
     ? await verifyPassword(password, user.password_hash)
     : (await consumePasswordCost(password), false)
 

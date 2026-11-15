@@ -1,26 +1,23 @@
-const KEY = 'omnimail:return-to'
-
-/** Only same-app paths outside the main app come back: today, the shared mailbox page. */
-function isReturnPath(path: string | null): path is string {
-  return Boolean(path && /^\/shared(\/|$)/.test(path))
+/**
+ * Where to land after signing in: the `returnTo` query parameter when it is a
+ * same-app path, else the page itself. Pages outside the main app (the shared
+ * mailbox) send users to `/?returnTo=<their path>` to sign in.
+ */
+export function returnPath(): string {
+  const requested = new URLSearchParams(window.location.search).get('returnTo')
+  // A path on this origin: one leading slash, never `//host` or `/\host`.
+  if (requested && /^\/(?![/\\])/.test(requested)) {
+    return requested
+  }
+  return `${window.location.pathname}${window.location.search}`
 }
 
-/** Remembers where to come back to once the main app has signed the user in. */
-export function rememberReturnPath(path: string): void {
-  try {
-    if (isReturnPath(path)) sessionStorage.setItem(KEY, path)
-  } catch {
-    // Storage blocked: the user lands in the main app instead.
-  }
+/** Sends the browser to sign in, coming back to `path` afterwards. */
+export function signInAndReturn(path: string): void {
+  window.location.assign(`/?returnTo=${encodeURIComponent(path)}`)
 }
 
-/** The remembered path, once; null when there is none. */
-export function takeReturnPath(): string | null {
-  try {
-    const path = sessionStorage.getItem(KEY)
-    sessionStorage.removeItem(KEY)
-    return isReturnPath(path) ? path : null
-  } catch {
-    return null
-  }
+/** Cloudflare Access sign-in, which lands on `returnPath()` with a session. */
+export function accessSignIn(): void {
+  window.location.replace(`/api/auth/access?returnTo=${encodeURIComponent(returnPath())}`)
 }

@@ -7,6 +7,7 @@ import { authenticatePassword } from '../../features/auth/session/password-login
 import { completeMfaChallenge, createMfaChallenge, mfaEnabled } from '../../features/auth/mfa/mfa'
 import { clearMfaChallengeCookie, mfaChallengeCookie, setMfaChallengeCookie } from '../../features/auth/mfa/mfa-cookie'
 import { beginLinuxDoAuth, finishLinuxDoAuth } from '../../features/auth/linux-do-auth'
+import { accessLogin } from '../../features/auth/access/access-login'
 import { registerExternalUser } from '../../features/auth/registration/registration-api'
 import { completeSetup } from '../../features/auth/setup/setup-api'
 import { issueDeviceToken, refreshDeviceToken, revokeRefreshToken } from '../../features/auth/tokens/token-api'
@@ -21,6 +22,13 @@ export function registerPublicRoutes(app: Hono<AppContext>): void {
 app.get('/api/health', (context) => context.json({ ok: true }))
 
 app.get('/api/config', async (context) => context.json(await publicConfig(context.env)))
+
+app.get('/api/auth/access', async (context) => {
+  const result = await accessLogin(context.env, context.req.raw, clientIp(context.req.raw.headers))
+  if (!result.sessionToken) return result.response
+  setSessionCookie(context, context.env, result.sessionToken)
+  return context.redirect(result.response.headers.get('Location') || '/', 302)
+})
 
 app.get('/api/auth/linux-do', async (context) => {
   const result = await beginLinuxDoAuth(context.env, context.req.raw)

@@ -28,7 +28,7 @@ import { useMessageSearch } from '../features/mailbox/hooks/useMessageSearch'
 import { useSessionExpiry } from '../features/auth/hooks/useSessionExpiry'
 import { useNewMailNotifications } from '../features/mailbox/hooks/useNewMailNotifications'
 import { type AdminView, useWorkspaceNavigation } from './navigation/workspaceNavigation'
-import { takeReturnPath } from '../shared/auth/returnPath'
+import { accessSignIn, returnPath } from '../shared/auth/returnPath'
 const AdminWorkspace = lazy(async () => ({ default: (await import('../features/admin/shell/AdminWorkspace')).AdminWorkspace }))
 const DeploymentWizard = lazy(async () => ({ default: (await import('../features/deployment/components/DeploymentWizard')).DeploymentWizard }))
 const MailCredentialMigration = lazy(async () => ({ default: (await import('../features/deployment/components/MailCredentialMigration')).MailCredentialMigration }))
@@ -395,8 +395,15 @@ export function App() {
       await api.logout()
     } finally {
       clearSession()
+      // Ending only OmniMail's session would sign straight back in through Access.
+      if (config?.accessLogin) window.location.assign(`https://${config.accessLogin.teamDomain}/cdn-cgi/access/logout`)
     }
-  }, [clearSession])
+  }, [clearSession, config])
+  const needsAccessSignIn = !loading && Boolean(config?.setupComplete && config.accessLogin)
+    && !user && !inviteToken && !extensionAuthorization
+  useEffect(() => {
+    if (needsAccessSignIn) accessSignIn()
+  }, [needsAccessSignIn])
   if (loading || !localeReady) return <PageLoader />
   if (connectionError || !config) {
     return <ConnectionError message={connectionError?.message || t('配置读取失败。')} quota={connectionError?.quota} retry={() => setLoadVersion((value) => value + 1)} />
@@ -430,6 +437,8 @@ export function App() {
     </Suspense>
   )
   if (!user) {
+    // Access sign-in is a full-page redirect, started by the effect above.
+    if (needsAccessSignIn) return <PageLoader />
     return (
       <PublicLanding
         appName={config.appName}
@@ -440,8 +449,8 @@ export function App() {
         turnstileSiteKey={config.turnstileSiteKey}
         onAuthenticated={(nextUser) => {
           // A page outside the main app sent the user here to sign in; send them back.
-          const returnPath = takeReturnPath()
-          if (returnPath) window.location.assign(returnPath)
+          const target = returnPath()
+          if (target !== `${window.location.pathname}${window.location.search}`) window.location.assign(target)
           else setUser(nextUser)
         }}
       />

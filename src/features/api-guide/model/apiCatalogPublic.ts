@@ -60,6 +60,13 @@ export const systemEndpoints: ApiEndpoint[] = [
 
 export const authEndpoints: ApiEndpoint[] = [
   {
+    method: 'GET', path: '/api/auth/access', group: 'auth', auth: 'public',
+    title: l('通过 Cloudflare Access 登录', 'Sign in through Cloudflare Access'),
+    description: l('位于 Access 应用之后；校验 Access JWT，为映射到该身份的账户建立会话。映射账户不再接受密码。', 'Sits behind an Access application; verifies the Access JWT and starts a session for the account linked to that identity. Linked accounts no longer accept passwords.'),
+    request: 'Header · Cf-Access-Jwt-Assertion; Query · returnTo? (same-origin path)', response: '302 · returnTo, 401 · invalid assertion, 403 · unlinked identity',
+    examplePath: '/api/auth/access?returnTo=%2Fshared%2Fadmin%2540example.com',
+  },
+  {
     method: 'GET', path: '/api/auth/linux-do', group: 'auth', auth: 'public',
     title: l('开始 Linux DO 登录', 'Start Linux DO sign-in'),
     description: l('生成 OAuth state 并重定向到 Linux DO Connect。', 'Create OAuth state and redirect to Linux DO Connect.'),

@@ -24,6 +24,7 @@ const PUBLIC_PATHS = new Set([
   '/api/auth/token/refresh',
   '/api/auth/token/revoke',
   '/api/auth/extension/exchange',
+  '/api/auth/access',
   '/api/auth/linux-do',
   '/api/auth/linux-do/callback',
   '/api/webhooks/resend',

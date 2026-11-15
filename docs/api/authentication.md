@@ -8,7 +8,29 @@
 
 > Web login, device tokens, MFA, extension authorization, and account lifecycle.
 
-本分类共 **22** 个端点。返回 [完整 API 索引](README.md) 或 [API 架构与安全说明](../API.md)。
+本分类共 **23** 个端点。返回 [完整 API 索引](README.md) 或 [API 架构与安全说明](../API.md)。
+
+<!-- endpoint:GET /api/auth/access catalog:bcdbba38600e -->
+## `GET /api/auth/access`
+
+**通过 Cloudflare Access 登录 / Sign in through Cloudflare Access**
+
+位于 Access 应用之后；校验 Access JWT，为映射到该身份的账户建立会话。映射账户不再接受密码。
+
+> Sits behind an Access application; verifies the Access JWT and starts a session for the account linked to that identity. Linked accounts no longer accept passwords.
+
+| 项目 | 内容 |
+| --- | --- |
+| 认证 | 公开，无需登录 |
+| 请求 | Header · Cf-Access-Jwt-Assertion; Query · returnTo? (same-origin path) |
+| 成功响应 | 302 · returnTo, 401 · invalid assertion, 403 · unlinked identity |
+
+### cURL 示例
+
+```bash
+curl --request GET \
+  --url "https://mail.example.com/api/auth/access?returnTo=%2Fshared%2Fadmin%2540example.com"
+```
 
 <!-- endpoint:GET /api/auth/linux-do catalog:1671fbe74574 -->
 ## `GET /api/auth/linux-do`
