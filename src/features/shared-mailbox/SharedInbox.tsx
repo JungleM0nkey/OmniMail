@@ -9,15 +9,12 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 import { HStack, Layout, LayoutContent, LayoutHeader, LayoutPanel, StackItem, VStack } from '@astryxdesign/core/Layout'
 import { Heading, Text } from '@astryxdesign/core/Text'
-import { Badge } from '@astryxdesign/core/Badge'
+import { AppShell } from '@astryxdesign/core/AppShell'
 import { Banner } from '@astryxdesign/core/Banner'
 import { Button } from '@astryxdesign/core/Button'
 import { EmptyState } from '@astryxdesign/core/EmptyState'
 import { Icon } from '@astryxdesign/core/Icon'
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable'
-import { Section } from '@astryxdesign/core/Section'
-import { Tab, TabList } from '@astryxdesign/core/TabList'
-import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden'
 import { useContainerReveal, useMediaQuery } from '@astryxdesign/core/hooks'
 import { Table, useTableRowStatus, useTableSelection, useTableSelectionState } from '@astryxdesign/core/Table'
 import type { TablePlugin } from '@astryxdesign/core/Table'
@@ -26,6 +23,7 @@ import { ArrowPathIcon, EnvelopeOpenIcon, InboxIcon, StarIcon, TrashIcon } from 
 import { ConversationPane } from './ConversationPane'
 import { ALIGN_STATUS_GUTTER, STACK_ROWS_BELOW, useInboxColumns, useInboxRows, type ActionId } from './InboxTable'
 import { ReplySheet } from './ReplySheet'
+import { SharedNav } from './SharedNav'
 import { FOLDERS, sharedMailboxApi, type Conversation, type Folder, type SharedMailbox } from './model'
 import { useSharedInbox, useThread, type MessageChange } from './useSharedInbox'
 
@@ -41,8 +39,6 @@ const LIST_MIN_WIDTH = 300
 /** The narrowest the pane may be dragged. */
 const PANE_MIN_WIDTH = 440
 
-/** The tab strip's height, borrowed by the bulk bar that replaces it so the table never moves. */
-const SELECTION_BAR_HEIGHT = 37
 
 /**
  * The width of a box, measured before paint and tracked as it changes. A
@@ -181,7 +177,11 @@ export function SharedInbox({ mailbox }: { mailbox: SharedMailbox }) {
       : { id: 'trash', label: 'Move to trash', icon: TrashIcon, change: { folder: 'trash' as const } },
   ]
 
-  const memberNames = mailbox.members.map((member) => member.displayName || member.email).join(', ')
+  const changeFolder = (next: Folder) => {
+    setFolder(next)
+    setChosenId(undefined)
+    setSelectedKeys(new Set())
+  }
   const renderPane = openConversation == null ? null : (isFullWidth: boolean) => (
     <ConversationPane
       conversation={openConversation}
@@ -195,22 +195,41 @@ export function SharedInbox({ mailbox }: { mailbox: SharedMailbox }) {
   )
 
   return (
-    <>
+    <AppShell
+      sideNav={<SharedNav mailbox={mailbox} folder={folder} unread={inbox.unread} onFolderChange={changeFolder} />}>
       <Layout
         ref={surfaceRef}
         height="fill"
         header={
-          <LayoutHeader hasDivider={isPaneFullWidth} padding={0}>
-            <VStack gap={0}>
-              <HStack gap={3} vAlign="center" wrap="wrap" padding={4}>
-                <StackItem size="fill">
-                  <VStack gap={0.5}>
-                    <Heading level={1}>{mailbox.address}</Heading>
-                    <Text type="supporting">
-                      {inbox.unread} unread · shared with {memberNames}
-                    </Text>
-                  </VStack>
-                </StackItem>
+          <LayoutHeader hasDivider padding={0}>
+            <HStack gap={3} vAlign="center" wrap="wrap" padding={4}>
+              <StackItem size="fill">
+                <VStack gap={0.5}>
+                  <Heading level={1}>{FOLDERS.find((option) => option.value === folder)?.label}</Heading>
+                  <Text type="supporting">
+                    {inbox.unread} unread · {mailbox.address}
+                  </Text>
+                </VStack>
+              </StackItem>
+              {/* Bulk actions take Refresh's place, on the same row, so selecting never moves the table. */}
+              {hasSelection ? (
+                <HStack gap={1} vAlign="center" wrap="wrap">
+                  <Text type="body">
+                    {selected.length} {selected.length === 1 ? 'message' : 'messages'} selected
+                  </Text>
+                  {bulkActions.map((action) => (
+                    <Button
+                      key={action.id}
+                      label={action.label}
+                      variant="ghost"
+                      size="sm"
+                      icon={<Icon icon={action.icon} size="sm" />}
+                      onClick={() => applyToSelected(action.change)}
+                    />
+                  ))}
+                  <Button label="Unselect all" variant="ghost" size="sm" onClick={() => setSelectedKeys(new Set())} />
+                </HStack>
+              ) : (
                 <Button
                   label="Refresh"
                   variant="ghost"
@@ -218,76 +237,8 @@ export function SharedInbox({ mailbox }: { mailbox: SharedMailbox }) {
                   isLoading={inbox.isLoading}
                   onClick={() => void inbox.reload()}
                 />
-              </HStack>
-
-              {isPaneFullWidth ? null : hasSelection ? (
-                /* In the tab strip's place and at its height, so selecting never moves the table. */
-                <VStack height={SELECTION_BAR_HEIGHT} vAlign="end" paddingBlockEnd={0.5}>
-                  <Section variant="muted" paddingInline={3} paddingBlock={2}>
-                    <HStack gap={3} vAlign="center" minHeight={28}>
-                      <StackItem size="fill">
-                        <HStack gap={1} vAlign="center">
-                          {bulkActions.map((action) => (
-                            <Button
-                              key={action.id}
-                              label={action.label}
-                              variant="ghost"
-                              size="sm"
-                              icon={<Icon icon={action.icon} size="sm" />}
-                              onClick={() => applyToSelected(action.change)}
-                            />
-                          ))}
-                        </HStack>
-                      </StackItem>
-                      <HStack gap={3} vAlign="center">
-                        <Text type="body">
-                          {selected.length} {selected.length === 1 ? 'message' : 'messages'} selected
-                        </Text>
-                        <Text type="supporting" color="secondary">•</Text>
-                        <Button
-                          label="Unselect All"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSelectedKeys(new Set())}
-                        />
-                      </HStack>
-                    </HStack>
-                  </Section>
-                </VStack>
-              ) : (
-                /* The 4px inset puts the tab labels on the heading's content line. */
-                <VStack paddingInline={1}>
-                  <TabList
-                    hasDivider
-                    value={folder}
-                    onChange={(value) => {
-                      setFolder(value as Folder)
-                      setChosenId(undefined)
-                    }}>
-                    {FOLDERS.map((option) => (
-                      <Tab
-                        key={option.value}
-                        value={option.value}
-                        label={option.label}
-                        endContent={
-                          option.value !== 'inbox' || inbox.unread === 0 ? undefined : (
-                            <Badge
-                              variant="neutral"
-                              label={
-                                <>
-                                  {inbox.unread}
-                                  <VisuallyHidden> unread</VisuallyHidden>
-                                </>
-                              }
-                            />
-                          )
-                        }
-                      />
-                    ))}
-                  </TabList>
-                </VStack>
               )}
-            </VStack>
+            </HStack>
           </LayoutHeader>
         }
         content={
@@ -312,7 +263,7 @@ export function SharedInbox({ mailbox }: { mailbox: SharedMailbox }) {
                       icon={<Icon icon={InboxIcon} size="lg" />}
                       actions={
                         folder === 'inbox' ? undefined : (
-                          <Button label="Go to Inbox" variant="secondary" onClick={() => setFolder('inbox')} />
+                          <Button label="Go to Inbox" variant="secondary" onClick={() => changeFolder('inbox')} />
                         )
                       }
                     />
@@ -372,6 +323,6 @@ export function SharedInbox({ mailbox }: { mailbox: SharedMailbox }) {
           if (folder === 'sent') void inbox.reload()
         }}
       />
-    </>
+    </AppShell>
   )
 }

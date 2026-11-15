@@ -13,6 +13,8 @@ const ignoredDirectories = new Set([
   'node_modules',
   'playwright-report',
   'test-results',
+  // Astryx theme editor output (themes/ and src/themes/): generated, not hand-written.
+  'themes',
 ])
 const ignoredFiles = new Set(['package-lock.json'])
 const codeExtensions = new Set([
