@@ -9,7 +9,7 @@ import { Spinner } from '@astryxdesign/core/Spinner'
 
 import { api, AUTH_REQUIRED_EVENT } from '../../shared/api/api-client'
 import { signInAndReturn } from '../../shared/auth/returnPath'
-import { defaultThemeSlug, themes } from './astryx-themes'
+import { defaultThemeSlug, themes } from '../../astryx-themes'
 import { SharedInbox } from './SharedInbox'
 import { sharedMailboxApi, type SharedMailbox } from './model'
 
@@ -59,7 +59,8 @@ function SharedMailboxPage() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Theme theme={themes[defaultThemeSlug]}>
+    {/* OmniMail's light/dark choice: public/theme-init.js sets it on <html> before this loads. */}
+    <Theme theme={themes[defaultThemeSlug]} mode={document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'}>
       <SharedMailboxPage />
     </Theme>
   </StrictMode>,

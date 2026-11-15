@@ -317,8 +317,10 @@ flowchart LR
 │   ├── app/                   # 应用装配、导航与全局样式
 │   ├── features/              # 邮箱、消息、认证、管理等业务功能
 │   ├── shared/                # API、i18n、通用邮件与 UI 能力
+│   ├── themes/                # 主题编辑器生成的 Astryx 主题，勿手改
 │   └── main.tsx               # Web 稳定入口，按路径加载 app/main.tsx 或 features/shared-mailbox/ 页面
 ├── public/                    # Worker Static Assets 与安全响应头
+├── themes/                    # OmniMail Astryx 主题编辑器源文件（`/shared` 页面）
 ├── extension/                 # OmniMail Float 浏览器扩展、商店资料与兼容契约
 ├── android/                   # 独立版本的原生 Android 客户端
 ├── email-worker/
@@ -337,6 +339,10 @@ flowchart LR
 ```
 
 详细的文件归属和新增功能约定见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。
+
+`/shared` 页面使用 OmniMail Astryx 主题（亮色与暗色，跟随 OmniMail 的主题选择）。修改主题请运行
+`npx astryx experimental theme editor set omnimail <项> <值>`，编辑器会重新生成 `themes/omnimail/` 和
+`src/themes/omnimail/`；自定义覆盖写在 `themes/omnimail/omnimail.theme.ts`。
 
 ## 快速部署
 

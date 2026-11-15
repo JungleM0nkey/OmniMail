@@ -1,0 +1,79 @@
+{
+  "name": "omnimail",
+  "like": "neutral",
+  "mode": "both",
+  "settings": [
+    {
+      "thing": "neutral",
+      "value": "#626268",
+      "source": "dial"
+    },
+    {
+      "thing": "accent",
+      "value": "#1d1d1f",
+      "source": "dial"
+    },
+    {
+      "thing": "--color-accent",
+      "value": "#f5f5f7",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#f5f5f7",
+      "source": "token"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#0b0b0c",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-background-surface",
+      "value": "#ffffff",
+      "source": "token"
+    },
+    {
+      "thing": "--color-background-surface",
+      "value": "#161617",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-text-primary",
+      "value": "#1d1d1f",
+      "source": "token"
+    },
+    {
+      "thing": "--color-text-primary",
+      "value": "#f5f5f7",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-text-secondary",
+      "value": "#626268",
+      "source": "token"
+    },
+    {
+      "thing": "--color-text-secondary",
+      "value": "#aaaab0",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "corners",
+      "value": "large",
+      "source": "dial"
+    },
+    {
+      "thing": "font",
+      "value": "system",
+      "source": "dial"
+    }
+  ],
+  "lifted": [],
+  "palette": "253ea968bce920722dc40495095050c1e67fe4145cf4a73d317b48ddd57102d2"
+}
