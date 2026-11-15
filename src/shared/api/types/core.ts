@@ -21,6 +21,7 @@ export interface AppConfig {
   registrationAvailable: boolean
   registrationMethod: RegistrationMethod
   linuxDoLoginEnabled: boolean
+  accessLogin: { teamDomain: string } | null
   registrationDomainPolicy: RegistrationDomainPolicy
   registrationProtectionReady: boolean
   turnstileSiteKey: string
