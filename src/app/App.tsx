@@ -28,6 +28,7 @@ import { useMessageSearch } from '../features/mailbox/hooks/useMessageSearch'
 import { useSessionExpiry } from '../features/auth/hooks/useSessionExpiry'
 import { useNewMailNotifications } from '../features/mailbox/hooks/useNewMailNotifications'
 import { type AdminView, useWorkspaceNavigation } from './navigation/workspaceNavigation'
+import { takeReturnPath } from '../shared/auth/returnPath'
 const AdminWorkspace = lazy(async () => ({ default: (await import('../features/admin/shell/AdminWorkspace')).AdminWorkspace }))
 const DeploymentWizard = lazy(async () => ({ default: (await import('../features/deployment/components/DeploymentWizard')).DeploymentWizard }))
 const MailCredentialMigration = lazy(async () => ({ default: (await import('../features/deployment/components/MailCredentialMigration')).MailCredentialMigration }))
@@ -437,7 +438,12 @@ export function App() {
         linuxDoLoginEnabled={config.linuxDoLoginEnabled}
         registrationDomainPolicy={config.registrationDomainPolicy}
         turnstileSiteKey={config.turnstileSiteKey}
-        onAuthenticated={setUser}
+        onAuthenticated={(nextUser) => {
+          // A page outside the main app sent the user here to sign in; send them back.
+          const returnPath = takeReturnPath()
+          if (returnPath) window.location.assign(returnPath)
+          else setUser(nextUser)
+        }}
       />
     )
   }

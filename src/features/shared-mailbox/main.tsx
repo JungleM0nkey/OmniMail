@@ -8,6 +8,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState'
 import { Spinner } from '@astryxdesign/core/Spinner'
 
 import { api, AUTH_REQUIRED_EVENT } from '../../shared/api/api-client'
+import { rememberReturnPath } from '../../shared/auth/returnPath'
 import { defaultThemeSlug, themes } from './astryx-themes'
 import { SharedInbox } from './SharedInbox'
 import { sharedMailboxApi, type SharedMailbox } from './model'
@@ -17,7 +18,9 @@ function requestedAddress(): string {
   return decodeURIComponent(window.location.pathname.replace(/^\/shared\/?/, '')).toLowerCase()
 }
 
+/** The main app owns sign-in; it sends the user back here afterwards. */
 function signIn() {
+  rememberReturnPath(window.location.pathname)
   window.location.assign('/')
 }
 
