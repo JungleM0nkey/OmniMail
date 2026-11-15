@@ -4,19 +4,21 @@ import { messageSummary } from './message-list-api'
 import { listMessageThread } from './message-thread'
 import { permanentlyDeleteMessage } from './message-storage'
 import { retentionValues } from '../admin/settings/storage-policy'
+import { mailboxAccessSql } from '../mailboxes/mailbox-access'
 import type { AttachmentRow, Env, MessageRow, SessionUser, StoredBody } from '../../app/types'
 
-async function ownedMessage(
+/** A message in a mailbox the user owns or is a member of. */
+async function accessibleMessage(
   env: Env,
   userId: string,
   messageId: string,
-): Promise<MessageRow | null> {
+): Promise<(MessageRow & { owner_user_id: string }) | null> {
   return env.DB.prepare(
-    `SELECT m.*
+    `SELECT m.*, mb.user_id AS owner_user_id
        FROM messages m
        JOIN mailboxes mb ON mb.address = m.mailbox_address
-      WHERE m.id = ? AND mb.user_id = ?`,
-  ).bind(messageId, userId).first<MessageRow>()
+      WHERE m.id = ? AND ${mailboxAccessSql()}`,
+  ).bind(messageId, userId, userId).first<MessageRow & { owner_user_id: string }>()
 }
 
 export async function getMessageDetail(
@@ -24,7 +26,7 @@ export async function getMessageDetail(
   user: SessionUser,
   messageId: string,
 ): Promise<Response> {
-  const message = await ownedMessage(env, user.id, messageId)
+  const message = await accessibleMessage(env, user.id, messageId)
   if (!message) return Response.json({ error: '邮件不存在。' }, { status: 404 })
 
   let body: StoredBody = { text: '', html: '' }
@@ -73,7 +75,7 @@ export async function updateMessage(
   messageId: string,
   request: Request,
 ): Promise<Response> {
-  const message = await ownedMessage(env, user.id, messageId)
+  const message = await accessibleMessage(env, user.id, messageId)
   if (!message) return Response.json({ error: '邮件不存在。' }, { status: 404 })
   const body = await request.json<{
     isRead?: boolean
@@ -121,8 +123,12 @@ export async function deleteMessage(
   messageId: string,
   ip: string,
 ): Promise<Response> {
-  const message = await ownedMessage(env, user.id, messageId)
+  const message = await accessibleMessage(env, user.id, messageId)
   if (!message) return Response.json({ error: '邮件不存在。' }, { status: 404 })
+  // Storage is the owner's account, so only the owner may free it.
+  if (message.owner_user_id !== user.id) {
+    return Response.json({ error: '只有邮箱所有者可以永久删除邮件。' }, { status: 403 })
+  }
   if (message.folder !== 'trash') {
     return Response.json({ error: '请先将邮件移入垃圾箱。' }, { status: 409 })
   }
@@ -157,8 +163,8 @@ async function ownedAttachment(
        FROM attachments a
        JOIN messages m ON m.id = a.message_id
        JOIN mailboxes mb ON mb.address = m.mailbox_address
-      WHERE a.id = ? AND a.message_id = ? AND mb.user_id = ?`,
-  ).bind(attachmentId, messageId, userId).first<AttachmentRow>()
+      WHERE a.id = ? AND a.message_id = ? AND ${mailboxAccessSql()}`,
+  ).bind(attachmentId, messageId, userId, userId).first<AttachmentRow>()
 }
 
 async function storedAttachmentResponse(
@@ -228,7 +234,7 @@ export async function getRawMessage(
   user: SessionUser,
   messageId: string,
 ): Promise<Response> {
-  const message = await ownedMessage(env, user.id, messageId)
+  const message = await accessibleMessage(env, user.id, messageId)
   if (!message?.raw_key) {
     return Response.json({ error: '原始邮件不存在。' }, { status: 404 })
   }

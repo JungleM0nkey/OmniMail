@@ -251,6 +251,8 @@ Serverless Webmail：
 
 - 多域名集中管理，支持启用、停用和安全删除
 - 每个域名可创建多个独立邮箱地址
+- 共享邮箱：`mailbox_members` 中的成员可在 `/shared/<address>` 页面读取、标记、移动和回复该邮箱邮件，
+  仅所有者可永久删除；成员目前通过 D1 SQL 添加，暂无管理界面
 - 用户级邮箱额度、创建权限和发信权限
 - 用户级存储配额与空间使用统计
 - 用户封禁、解封及会话即时失效
@@ -314,7 +316,7 @@ flowchart LR
 │   ├── app/                   # 应用装配、导航与全局样式
 │   ├── features/              # 邮箱、消息、认证、管理等业务功能
 │   ├── shared/                # API、i18n、通用邮件与 UI 能力
-│   └── main.tsx               # Web 稳定入口
+│   └── main.tsx               # Web 稳定入口，按路径加载 app/main.tsx 或 features/shared-mailbox/ 页面
 ├── public/                    # Worker Static Assets 与安全响应头
 ├── extension/                 # OmniMail Float 浏览器扩展、商店资料与兼容契约
 ├── android/                   # 独立版本的原生 Android 客户端

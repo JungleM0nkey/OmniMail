@@ -66,7 +66,8 @@ beforeAll(async () => {
   const before = measured()
   baseline = await list(before.environment)
   baselineRows = before.operations.reduce((sum, item) => sum + item.read, 0)
-  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(({ name }) => Number(name.slice(0, 4)) === 36))
+  // 0042 too: updateMessage reads mailbox_members, and this test bypasses ensureSchema.
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(({ name }) => [36, 42].includes(Number(name.slice(0, 4)))))
 })
 
 describe('D1 邮件读取优化', () => {

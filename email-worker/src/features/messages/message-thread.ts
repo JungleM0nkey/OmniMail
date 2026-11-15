@@ -1,4 +1,5 @@
 import { messageSummary } from './message-list-api'
+import { mailboxAccessSql } from '../mailboxes/mailbox-access'
 import type { Env, MessageRow, SessionUser } from '../../app/types'
 
 export function messageReferenceIds(
@@ -38,10 +39,10 @@ export async function listMessageThread(
     `SELECT m.*
        FROM messages m
        JOIN mailboxes mb ON mb.address = m.mailbox_address
-      WHERE mb.user_id = ? AND m.mailbox_address = ?
+      WHERE ${mailboxAccessSql()} AND m.mailbox_address = ?
         AND (${conditions.join(' OR ')})
       ORDER BY COALESCE(m.received_at, m.sent_at, m.created_at), m.id
       LIMIT 50`,
-  ).bind(user.id, selected.mailbox_address, ...bindings).all<MessageRow>()
+  ).bind(user.id, user.id, selected.mailbox_address, ...bindings).all<MessageRow>()
   return results.map(messageSummary)
 }

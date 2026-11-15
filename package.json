@@ -43,7 +43,11 @@
     "build:extension": "vite build --config vite.extension.config.ts"
   },
   "dependencies": {
+    "@astryxdesign/core": "^0.7.16",
+    "@astryxdesign/theme-neutral": "^0.7.16",
     "@gsap/react": "^2.1.2",
+    "@heroicons/react": "^2.2.0",
+    "@stylexjs/stylex": "^0.19.2",
     "franc": "^6.2.0",
     "gsap": "^3.15.0",
     "hono": "4.13.13",
@@ -55,6 +59,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "^0.7.16",
     "@cloudflare/vitest-pool-workers": "^0.21.2",
     "@cloudflare/workers-types": "5.20260804.1",
     "@playwright/test": "^1.62.0",

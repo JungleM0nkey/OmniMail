@@ -33,6 +33,20 @@ export const mailboxEndpoints: ApiEndpoint[] = [
     description: l('立即隐藏非主邮箱，并启动邮件、草稿和附件的异步清理。', 'Hide a non-primary mailbox immediately and start asynchronous mail, draft, and attachment cleanup.'),
     request: 'Path · address', response: '202 · { ok: true }',
   },
+  {
+    method: 'GET', path: '/api/shared-mailboxes', group: 'mailboxes', auth: 'authenticated',
+    title: l('列出共享给我的邮箱', 'List mailboxes shared with me'),
+    description: l('返回当前用户作为成员的共享邮箱、全部成员和收件箱未读数。', 'Return shared mailboxes the current user is a member of, with all members and inbox unread counts.'),
+    request: 'No parameters', response: '200 · { mailboxes }',
+  },
+  {
+    method: 'GET', path: '/api/shared-mailboxes/:address/messages', group: 'mailboxes', auth: 'authenticated',
+    title: l('查询共享邮箱邮件', 'Query shared mailbox messages'),
+    description: l('仅限成员。按文件夹列出共享邮箱邮件；详情、标记和回复沿用 /api/messages/:id 接口。', 'Members only. List a shared mailbox folder; details, flags, and replies use the /api/messages/:id endpoints.'),
+    request: 'Path · address; Query · folder=inbox|starred|sent|trash?, limit=1..100?, cursor?',
+    response: '200 · { messages, unread, page }',
+    examplePath: '/api/shared-mailboxes/admin%40example.com/messages?folder=inbox',
+  },
 ]
 
 export const messageEndpoints: ApiEndpoint[] = [

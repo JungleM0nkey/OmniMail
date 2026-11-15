@@ -4,6 +4,7 @@ import { replySubject } from '../../app/handlers/mail'
 import { sendOutboundMessage, type OutboundAttachmentUpload } from '../outbound/outbound-message'
 import { outboundProviderConfigError, outboundProviderForAddress } from '../outbound/outbound-provider-config'
 import { resendConfigForAddress } from '../outbound/resend-config'
+import { mailboxAccessSql } from '../mailboxes/mailbox-access'
 import type { Env, MessageRow, SessionUser } from '../../app/types'
 
 type ReplyInput = {
@@ -16,7 +17,7 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status })
 }
 
-async function ownedMessage(
+async function replyableMessage(
   env: Env,
   userId: string,
   messageId: string,
@@ -25,14 +26,14 @@ async function ownedMessage(
     `SELECT m.*
       FROM messages m
       JOIN mailboxes mb ON mb.address = m.mailbox_address
-      WHERE m.id = ? AND mb.user_id = ?
+      WHERE m.id = ? AND ${mailboxAccessSql()}
         AND mb.is_active = 1 AND mb.is_hidden = 0
         AND EXISTS (
           SELECT 1 FROM domains d
            WHERE d.name = LOWER(SUBSTR(m.mailbox_address, INSTR(m.mailbox_address, '@') + 1))
              AND d.is_active = 1
         )`,
-  ).bind(messageId, userId).first<MessageRow>()
+  ).bind(messageId, userId, userId).first<MessageRow>()
 }
 
 async function replyInput(request: Request): Promise<ReplyInput> {
@@ -77,7 +78,7 @@ export async function sendReply(
   const attachmentError = attachmentFilesError(files)
   if (attachmentError) return json({ error: attachmentError }, 400)
 
-  const original = await ownedMessage(env, user.id, messageId)
+  const original = await replyableMessage(env, user.id, messageId)
   if (!original) return json({ error: '邮件不存在。' }, 404)
   if (original.delivered_to) {
     return json({ error: '无人收件邮件不能直接回复。' }, 409)
