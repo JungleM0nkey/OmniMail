@@ -9,6 +9,7 @@ import { qqMailRoutes } from '../../features/qq-mail/qq-mail-routes'
 import { naverMailRoutes } from '../../features/naver-mail/naver-mail-routes'
 import { yandexMailRoutes } from '../../features/yandex-mail/yandex-mail-routes'
 import { addMailbox, deleteMailbox, listMailboxes, updateMailbox } from '../../features/mailboxes/mailbox-api'
+import { listSharedMailboxes, listSharedMessages } from '../../features/mailboxes/shared-mailbox-api'
 import { bulkUpdateMessages } from '../../features/messages/message-bulk-api'
 import { deleteMessage, getMessageAttachment, getMessageDetail, getRawMessage, previewMessageAttachment, updateMessage } from '../../features/messages/message-detail-api'
 import { listMessages } from '../../features/messages/message-list-api'
@@ -49,6 +50,11 @@ app.delete('/api/mailboxes/:address', (context) => (
     context.req.param('address'),
     clientIp(context.req.raw.headers),
   )
+))
+
+app.get('/api/shared-mailboxes', (context) => listSharedMailboxes(context.env, context.get('user')))
+app.get('/api/shared-mailboxes/:address/messages', (context) => listSharedMessages(
+  context.env, context.get('user'), context.req.param('address'), context.req.raw,
 ))
 
 app.get('/api/messages', (context) => listMessages(context.env, context.get('user'), context.req.raw))

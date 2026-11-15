@@ -8,7 +8,7 @@
 
 > Read domains and create, enable, switch, or delete mailbox addresses.
 
-本分类共 **5** 个端点。返回 [完整 API 索引](README.md) 或 [API 架构与安全说明](../API.md)。
+本分类共 **7** 个端点。返回 [完整 API 索引](README.md) 或 [API 架构与安全说明](../API.md)。
 
 <!-- endpoint:GET /api/domains catalog:e04a28567ea7 -->
 ## `GET /api/domains`
@@ -130,5 +130,51 @@ curl --request PATCH \
 ```bash
 curl --request DELETE \
   --url "https://mail.example.com/api/mailboxes/owner%40example.com" \
+  --header "Authorization: Bearer om_at_..."
+```
+
+<!-- endpoint:GET /api/shared-mailboxes catalog:ea8dbfd70d4e -->
+## `GET /api/shared-mailboxes`
+
+**列出共享给我的邮箱 / List mailboxes shared with me**
+
+返回当前用户作为成员的共享邮箱、全部成员和收件箱未读数。
+
+> Return shared mailboxes the current user is a member of, with all members and inbox unread counts.
+
+| 项目 | 内容 |
+| --- | --- |
+| 认证 | 登录用户；支持 Session Cookie 或 Access Token |
+| 请求 | No parameters |
+| 成功响应 | 200 · { mailboxes } |
+
+### cURL 示例
+
+```bash
+curl --request GET \
+  --url "https://mail.example.com/api/shared-mailboxes" \
+  --header "Authorization: Bearer om_at_..."
+```
+
+<!-- endpoint:GET /api/shared-mailboxes/:address/messages catalog:484165c7d343 -->
+## `GET /api/shared-mailboxes/{address}/messages`
+
+**查询共享邮箱邮件 / Query shared mailbox messages**
+
+仅限成员。按文件夹列出共享邮箱邮件；详情、标记和回复沿用 /api/messages/:id 接口。
+
+> Members only. List a shared mailbox folder; details, flags, and replies use the /api/messages/:id endpoints.
+
+| 项目 | 内容 |
+| --- | --- |
+| 认证 | 登录用户；支持 Session Cookie 或 Access Token |
+| 请求 | Path · address; Query · folder=inbox\|starred\|sent\|trash?, limit=1..100?, cursor? |
+| 成功响应 | 200 · { messages, unread, page } |
+
+### cURL 示例
+
+```bash
+curl --request GET \
+  --url "https://mail.example.com/api/shared-mailboxes/admin%40example.com/messages?folder=inbox" \
   --header "Authorization: Bearer om_at_..."
 ```

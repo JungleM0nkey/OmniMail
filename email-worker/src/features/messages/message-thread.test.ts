@@ -56,6 +56,7 @@ describe('message thread references', () => {
     expect(query).not.toContain(' LIKE ')
     expect(bindings).toEqual([
       user.id,
+      user.id,
       message.mailbox_address,
       message.id,
       messageId,

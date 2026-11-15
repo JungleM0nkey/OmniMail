@@ -1,6 +1,6 @@
 import { normalizeEmail, safeJsonArray, validEmail } from '../../shared/http/api-helpers'
 import { searchLikePattern } from '../../shared/mail/message-search'
-import { pageResult, parsePageRequest } from '../../shared/http/pagination'
+import { pageResult, parsePageRequest, type PageCursor } from '../../shared/http/pagination'
 import { cachedMessageCounts, cacheMessageCounts, type MessageCounts } from './message-count-cache'
 import type { Env, MessageRow, SessionUser } from '../../app/types'
 
@@ -28,7 +28,7 @@ type SummaryFields = Pick<
   | 'created_at'
 >
 
-type SummaryRow = SummaryFields & { sort_time: number }
+export type SummaryRow = SummaryFields & { sort_time: number }
 type CountsRow = { [Key in keyof MessageCounts]: number | null }
 type VersionRow = { version: number }
 
@@ -42,6 +42,41 @@ export function parseSyncVersion(value: string | null): number | null | undefine
   if (value === null) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+/** The columns `messageSummary` reads, plus the keyset sort value. */
+export const SUMMARY_COLUMNS = `m.id, m.mailbox_address, m.direction, m.status, m.folder,
+       m.sender_name, m.sender_address, m.delivered_to, m.recipients_json,
+       m.subject, m.preview,
+       m.received_at, m.sent_at, m.attachment_count, m.is_read, m.is_starred,
+       m.processing_error, m.delivery_status, m.purge_after, m.created_at,
+       m.sort_at AS sort_time`
+
+/** What each mail folder contains; anything unrecognised is the inbox. */
+export function folderConditions(folder: string): string[] {
+  if (folder === 'starred') return ['m.is_starred = 1', "m.folder != 'trash'"]
+  if (folder === 'sent') return ["m.direction = 'outgoing'", "m.folder = 'sent'"]
+  if (folder === 'trash') return ["m.folder = 'trash'"]
+  return ["m.direction = 'incoming'", "m.folder = 'inbox'"]
+}
+
+/** Keyset condition after a `[sort_at, id]` cursor; undefined when the cursor is malformed. */
+export function messageCursorCondition(
+  cursor: PageCursor,
+): { sql: string; bindings: Array<string | number> } | undefined {
+  const [sortTime, id] = cursor.values
+  if (
+    typeof sortTime !== 'number'
+    || !Number.isSafeInteger(sortTime)
+    || sortTime < 0
+    || typeof id !== 'string'
+    || !id
+    || id.length > 100
+  ) return undefined
+  return {
+    sql: '(m.sort_at < ? OR (m.sort_at = ? AND m.id < ?))',
+    bindings: [sortTime, sortTime, id],
+  }
 }
 
 export function messageSummary(row: SummaryFields) {
@@ -117,17 +152,8 @@ export async function listMessages(
     scopeBindings.push(domain)
   }
 
-  const conditions = [...scopeConditions]
+  const conditions = [...scopeConditions, ...folderConditions(folder)]
   const bindings = [...scopeBindings]
-  if (folder === 'starred') {
-    conditions.push('m.is_starred = 1', "m.folder != 'trash'")
-  } else if (folder === 'sent') {
-    conditions.push("m.direction = 'outgoing'", "m.folder = 'sent'")
-  } else if (folder === 'trash') {
-    conditions.push("m.folder = 'trash'")
-  } else {
-    conditions.push("m.direction = 'incoming'", "m.folder = 'inbox'")
-  }
 
   if (query) {
     const pattern = searchLikePattern(query)
@@ -143,31 +169,14 @@ export async function listMessages(
   }
 
   if (pagination.cursor) {
-    const [sortTime, id] = pagination.cursor.values
-    if (
-      typeof sortTime !== 'number'
-      || !Number.isSafeInteger(sortTime)
-      || sortTime < 0
-      || typeof id !== 'string'
-      || !id
-      || id.length > 100
-    ) {
-      return Response.json({ error: '邮件分页游标无效。' }, { status: 400 })
-    }
-    conditions.push(
-      '(m.sort_at < ? OR (m.sort_at = ? AND m.id < ?))',
-    )
-    bindings.push(sortTime, sortTime, id)
+    const after = messageCursorCondition(pagination.cursor)
+    if (!after) return Response.json({ error: '邮件分页游标无效。' }, { status: 400 })
+    conditions.push(after.sql)
+    bindings.push(...after.bindings)
   }
 
   const messagesStatement = env.DB.prepare(
-    `SELECT
-       m.id, m.mailbox_address, m.direction, m.status, m.folder,
-       m.sender_name, m.sender_address, m.delivered_to, m.recipients_json,
-       m.subject, m.preview,
-       m.received_at, m.sent_at, m.attachment_count, m.is_read, m.is_starred,
-       m.processing_error, m.delivery_status, m.purge_after, m.created_at,
-       m.sort_at AS sort_time
+    `SELECT ${SUMMARY_COLUMNS}
      FROM messages m
      JOIN mailboxes mb ON mb.address = m.mailbox_address
      WHERE ${conditions.join(' AND ')}
